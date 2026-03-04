@@ -1,0 +1,619 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>Crypto ML Forecasting Dashboard</title>
+
+<!-- Bootstrap 5 -->
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css"/>
+<!-- Bootstrap Icons -->
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.css"/>
+<!-- Chart.js -->
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.2/dist/chart.umd.min.js"></script>
+<!-- Luxon adapter for Chart.js -->
+<script src="https://cdn.jsdelivr.net/npm/luxon@3.4.4/build/global/luxon.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-luxon@1.3.1/dist/chartjs-adapter-luxon.umd.min.js"></script>
+
+<style>
+:root {
+  --bg-dark: #0d1117;
+  --bg-card: #161b22;
+  --bg-card2: #1c2128;
+  --border: #30363d;
+  --text: #e6edf3;
+  --text-muted: #8b949e;
+  --btc: #F7931A;
+  --eth: #627EEA;
+  --sol: #9945FF;
+  --green: #3fb950;
+  --red: #f85149;
+}
+body { background: var(--bg-dark); color: var(--text); font-family: 'Segoe UI', system-ui, sans-serif; }
+.navbar { background: var(--bg-card) !important; border-bottom: 1px solid var(--border); }
+.card  { background: var(--bg-card); border: 1px solid var(--border); border-radius: 12px; }
+.card-header { background: var(--bg-card2); border-bottom: 1px solid var(--border); border-radius: 12px 12px 0 0 !important; }
+.badge-btc { background: #F7931A22; color: #F7931A; border: 1px solid #F7931A55; }
+.badge-eth { background: #627EEA22; color: #627EEA; border: 1px solid #627EEA55; }
+.badge-sol { background: #9945FF22; color: #9945FF; border: 1px solid #9945FF55; }
+.price-value { font-size: 1.8rem; font-weight: 700; }
+.positive { color: var(--green); }
+.negative { color: var(--red); }
+.metric-label { font-size: 0.75rem; text-transform: uppercase; letter-spacing: .05em; color: var(--text-muted); }
+.metric-value { font-size: 1.1rem; font-weight: 600; }
+.forecast-card { background: var(--bg-card2); border: 1px solid var(--border); border-radius: 10px; padding: 1rem; text-align: center; }
+.horizon-badge { font-size: 0.7rem; padding: 2px 8px; border-radius: 20px; font-weight: 700; }
+.horizon-1d  { background: #1f3d1f; color: var(--green); }
+.horizon-7d  { background: #1a2a3d; color: #58a6ff; }
+.horizon-30d { background: #3d1a2a; color: #ff7b93; }
+.tab-nav .nav-link { color: var(--text-muted); border: none; background: none; padding: .5rem 1rem; }
+.tab-nav .nav-link.active { color: var(--text); background: var(--bg-card2); border-radius: 8px; }
+.tab-nav .nav-link:hover { color: var(--text); }
+.btn-outline-primary { border-color: #58a6ff; color: #58a6ff; }
+.btn-outline-primary:hover { background: #58a6ff22; }
+.btn-outline-warning { border-color: #d29922; color: #d29922; }
+.btn-outline-warning:hover { background: #d2992222; }
+.progress-thin { height: 4px; border-radius: 2px; }
+.chart-container { position: relative; height: 280px; }
+.spinner-overlay { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; background: rgba(13,17,23,.6); border-radius: 12px; z-index: 10; }
+table th { color: var(--text-muted); font-weight: 500; font-size:.8rem; text-transform: uppercase; letter-spacing:.04em; }
+table td { color: var(--text); vertical-align: middle; }
+.table { --bs-table-bg: transparent; --bs-table-border-color: var(--border); }
+</style>
+</head>
+<body>
+
+<!-- Navbar -->
+<nav class="navbar navbar-expand-lg sticky-top">
+  <div class="container-fluid px-4">
+    <span class="navbar-brand fw-bold text-white">
+      <i class="bi bi-graph-up-arrow text-info me-2"></i>Crypto ML Forecast
+    </span>
+    <div class="d-flex align-items-center gap-2 ms-auto">
+      <span class="text-muted small" id="last-refresh-label">
+        {% if last_refresh.time %} Last refresh: {{ last_refresh.time[:19] }} {% else %} Initializing... {% endif %}
+      </span>
+      <button class="btn btn-sm btn-outline-primary" onclick="triggerRefresh()">
+        <i class="bi bi-arrow-clockwise me-1"></i>Refresh
+      </button>
+      <button class="btn btn-sm btn-outline-warning" onclick="triggerRetrain()">
+        <i class="bi bi-cpu me-1"></i>Retrain ML
+      </button>
+    </div>
+  </div>
+</nav>
+
+<div class="container-fluid px-4 py-4">
+
+  <!-- Status bar -->
+  <div class="row g-2 mb-4">
+    <div class="col-12">
+      <div id="status-bar" class="card p-3 d-flex flex-row align-items-center gap-3">
+        <div class="d-flex align-items-center gap-2">
+          <span class="badge bg-success">LIVE</span>
+          <span class="text-muted small" id="status-text">Loading system status...</span>
+        </div>
+        <div id="training-progress" class="ms-auto d-none">
+          <div class="progress progress-thin" style="width:200px">
+            <div class="progress-bar progress-bar-striped progress-bar-animated bg-warning" style="width:100%"></div>
+          </div>
+          <small class="text-warning">Training models...</small>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Price overview cards -->
+  <div class="row g-3 mb-4">
+    {% for sym, info in assets.items() %}
+    {% set p = prices.get(sym, {}) %}
+    <div class="col-md-4">
+      <div class="card p-3">
+        <div class="d-flex justify-content-between align-items-start mb-3">
+          <div>
+            <span class="badge badge-{{sym.lower()}} mb-1">{{ sym }}</span>
+            <div class="fw-semibold text-muted small">{{ info.name }}</div>
+          </div>
+          <div class="text-end">
+            {% if p.get('pct_24h') is not none %}
+            <span class="badge {{ 'bg-success' if p.pct_24h >= 0 else 'bg-danger' }}">
+              {{ '+' if p.pct_24h >= 0 else '' }}{{ '%.2f'|format(p.pct_24h) }}% 24h
+            </span>
+            {% endif %}
+          </div>
+        </div>
+        <div class="price-value mb-2" style="color: {{ info.color }}">
+          {% if p.get('price') %}${{ '{:,.2f}'.format(p.price) }}{% else %}<span class="text-muted">Loading...</span>{% endif %}
+        </div>
+        <div class="row g-2 text-center">
+          <div class="col-6">
+            <div class="metric-label">Volume 24h</div>
+            <div class="metric-value">
+              {% if p.get('volume') %}${{ '{:,.0f}'.format(p.volume / 1e6) }}M{% else %}–{% endif %}
+            </div>
+          </div>
+          <div class="col-6">
+            <div class="metric-label">Market Cap</div>
+            <div class="metric-value">
+              {% if p.get('market_cap') %}${{ '{:,.0f}'.format(p.market_cap / 1e9) }}B{% else %}–{% endif %}
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+
+  <!-- Main tab navigation -->
+  <ul class="nav tab-nav mb-3">
+    {% for sym, info in assets.items() %}
+    <li class="nav-item">
+      <a class="nav-link {{ 'active' if loop.first else '' }}" href="#" onclick="showTab('{{ sym }}'); return false;" id="tab-{{ sym }}">
+        {{ info.name }}
+      </a>
+    </li>
+    {% endfor %}
+    <li class="nav-item ms-auto">
+      <a class="nav-link {{ 'active' if not assets else '' }}" href="#" onclick="showTab('compare'); return false;" id="tab-compare">
+        <i class="bi bi-bar-chart me-1"></i>Compare
+      </a>
+    </li>
+  </ul>
+
+  <!-- Per-symbol tabs -->
+  {% for sym, info in assets.items() %}
+  <div id="panel-{{ sym }}" class="tab-panel {{ '' if loop.first else 'd-none' }}">
+
+    <!-- Forecast cards -->
+    <div class="row g-3 mb-4">
+      <div class="col-12">
+        <h6 class="text-muted mb-3"><i class="bi bi-lightning-charge me-2"></i>ML Price Forecasts</h6>
+      </div>
+      {% for h in horizons %}
+      {% set pred = predictions.get(sym, {}).get(h|string, {}).get('price_usd', {}) %}
+      <div class="col-md-4">
+        <div class="forecast-card">
+          <div class="mb-2">
+            <span class="horizon-badge horizon-{{ h }}d">{{ h }}-Day Forecast</span>
+          </div>
+          <div style="font-size:1.6rem; font-weight:700; color:{{ info.color }}">
+            {% if pred.get('value') %}
+              ${{ '{:,.2f}'.format(pred.value) }}
+            {% else %}
+              <span class="text-muted small">No prediction yet</span>
+            {% endif %}
+          </div>
+          {% if pred.get('lower') and pred.get('upper') %}
+          <div class="text-muted small mt-1">
+            Range: ${{ '{:,.2f}'.format(pred.lower) }} – ${{ '{:,.2f}'.format(pred.upper) }}
+          </div>
+          {% endif %}
+          {% if pred.get('predicted_for') %}
+          <div class="text-muted" style="font-size:.7rem; margin-top:.3rem;">for {{ pred.predicted_for }}</div>
+          {% endif %}
+          {% set p_now = prices.get(sym, {}).get('price') %}
+          {% if pred.get('value') and p_now %}
+            {% set diff = ((pred.value - p_now) / p_now * 100) %}
+            <div class="mt-2 {{ 'positive' if diff >= 0 else 'negative' }}" style="font-size:.85rem; font-weight:600;">
+              {{ '+' if diff >= 0 else '' }}{{ '%.2f'|format(diff) }}% vs now
+            </div>
+          {% endif %}
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+
+    <!-- Volume & Market Cap forecasts -->
+    <div class="row g-3 mb-4">
+      <div class="col-md-6">
+        <div class="card p-3">
+          <h6 class="text-muted mb-3"><i class="bi bi-activity me-2"></i>Volume 24h Forecasts</h6>
+          <div class="row g-2">
+            {% for h in horizons %}
+            {% set vf = predictions.get(sym, {}).get(h|string, {}).get('volume_24h', {}) %}
+            <div class="col-4 text-center">
+              <div class="metric-label">{{ h }}d</div>
+              <div class="metric-value" style="color:{{ info.color }}">
+                {% if vf.get('value') %}${{ '{:,.0f}'.format(vf.value / 1e6) }}M{% else %}–{% endif %}
+              </div>
+            </div>
+            {% endfor %}
+          </div>
+        </div>
+      </div>
+      <div class="col-md-6">
+        <div class="card p-3">
+          <h6 class="text-muted mb-3"><i class="bi bi-pie-chart me-2"></i>Market Cap Forecasts</h6>
+          <div class="row g-2">
+            {% for h in horizons %}
+            {% set mf = predictions.get(sym, {}).get(h|string, {}).get('market_cap', {}) %}
+            <div class="col-4 text-center">
+              <div class="metric-label">{{ h }}d</div>
+              <div class="metric-value" style="color:{{ info.color }}">
+                {% if mf.get('value') %}${{ '{:,.0f}'.format(mf.value / 1e9) }}B{% else %}–{% endif %}
+              </div>
+            </div>
+            {% endfor %}
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Charts row -->
+    <div class="row g-3 mb-4">
+      <div class="col-lg-8">
+        <div class="card p-3 position-relative">
+          <div class="d-flex justify-content-between align-items-center mb-3">
+            <h6 class="mb-0"><i class="bi bi-graph-up me-2"></i>Price History + Forecasts</h6>
+            <div class="btn-group btn-group-sm">
+              <button class="btn btn-sm btn-outline-secondary" onclick="setRange('{{ sym }}', 30)">30D</button>
+              <button class="btn btn-sm btn-outline-secondary" onclick="setRange('{{ sym }}', 90)">90D</button>
+              <button class="btn btn-sm btn-outline-secondary active" onclick="setRange('{{ sym }}', 180)">180D</button>
+              <button class="btn btn-sm btn-outline-secondary" onclick="setRange('{{ sym }}', 365)">1Y</button>
+            </div>
+          </div>
+          <div class="chart-container">
+            <canvas id="price-chart-{{ sym }}"></canvas>
+          </div>
+        </div>
+      </div>
+      <div class="col-lg-4">
+        <div class="card p-3">
+          <h6 class="mb-3"><i class="bi bi-bar-chart-line me-2"></i>Volume 24h</h6>
+          <div class="chart-container">
+            <canvas id="volume-chart-{{ sym }}"></canvas>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="row g-3 mb-4">
+      <div class="col-12">
+        <div class="card p-3">
+          <h6 class="mb-3"><i class="bi bi-globe me-2"></i>Market Cap History</h6>
+          <div class="chart-container">
+            <canvas id="mcap-chart-{{ sym }}"></canvas>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+  {% endfor %}
+
+  <!-- Compare panel -->
+  <div id="panel-compare" class="tab-panel d-none">
+    <div class="row g-3">
+      <div class="col-12">
+        <div class="card p-3">
+          <h6 class="mb-3"><i class="bi bi-graph-up me-2"></i>Normalised Price Comparison (base = 100)</h6>
+          <div class="chart-container" style="height:340px">
+            <canvas id="compare-chart"></canvas>
+          </div>
+        </div>
+      </div>
+      <div class="col-12">
+        <div class="card p-3">
+          <h6 class="mb-3"><i class="bi bi-table me-2"></i>Forecast Summary Table</h6>
+          <div class="table-responsive">
+            <table class="table table-sm table-bordered align-middle">
+              <thead>
+                <tr>
+                  <th>Asset</th>
+                  <th>Current Price</th>
+                  <th>1-Day Forecast</th><th>1D Change</th>
+                  <th>7-Day Forecast</th><th>7D Change</th>
+                  <th>30-Day Forecast</th><th>30D Change</th>
+                </tr>
+              </thead>
+              <tbody id="forecast-table-body">
+                {% for sym, info in assets.items() %}
+                {% set p_now = prices.get(sym, {}).get('price') %}
+                <tr>
+                  <td>
+                    <span class="badge badge-{{sym.lower()}} me-1">{{sym}}</span>
+                    {{info.name}}
+                  </td>
+                  <td>{% if p_now %}${{ '{:,.2f}'.format(p_now) }}{% else %}–{% endif %}</td>
+                  {% for h in horizons %}
+                  {% set pred = predictions.get(sym, {}).get(h|string, {}).get('price_usd', {}) %}
+                  <td>{% if pred.get('value') %}${{ '{:,.2f}'.format(pred.value) }}{% else %}–{% endif %}</td>
+                  <td>
+                    {% if pred.get('value') and p_now %}
+                      {% set diff = ((pred.value - p_now) / p_now * 100) %}
+                      <span class="{{ 'positive' if diff >= 0 else 'negative' }}">
+                        {{ '+' if diff >= 0 else '' }}{{ '%.2f'|format(diff) }}%
+                      </span>
+                    {% else %}–{% endif %}
+                  </td>
+                  {% endfor %}
+                </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</div><!-- /container -->
+
+<script>
+// -----------------------------------------------------------------------
+// State
+// -----------------------------------------------------------------------
+const ASSETS = {{ assets | tojson }};
+const COLORS = { BTC: '#F7931A', ETH: '#627EEA', SOL: '#9945FF' };
+const charts = {};
+const historyCache = {};
+
+// -----------------------------------------------------------------------
+// Tab switching
+// -----------------------------------------------------------------------
+function showTab(sym) {
+  document.querySelectorAll('.tab-panel').forEach(p => p.classList.add('d-none'));
+  document.querySelectorAll('.tab-nav .nav-link').forEach(a => a.classList.remove('active'));
+  document.getElementById(`panel-${sym}`).classList.remove('d-none');
+  document.getElementById(`tab-${sym}`).classList.add('active');
+
+  if (sym === 'compare') {
+    loadCompareChart();
+  } else {
+    loadChartsForSymbol(sym, 180);
+  }
+}
+
+// -----------------------------------------------------------------------
+// API helpers
+// -----------------------------------------------------------------------
+async function fetchPrices(symbol, days) {
+  const key = `${symbol}-${days}`;
+  if (historyCache[key]) return historyCache[key];
+  const r = await fetch(`/api/prices/${symbol}?days=${days}`);
+  const j = await r.json();
+  historyCache[key] = j.data || [];
+  return historyCache[key];
+}
+
+// -----------------------------------------------------------------------
+// Chart builders
+// -----------------------------------------------------------------------
+function destroyChart(id) {
+  if (charts[id]) { charts[id].destroy(); delete charts[id]; }
+}
+
+function mkChart(id, config) {
+  destroyChart(id);
+  const ctx = document.getElementById(id);
+  if (!ctx) return;
+  charts[id] = new Chart(ctx, config);
+}
+
+async function loadChartsForSymbol(sym, days) {
+  const data = await fetchPrices(sym, days);
+  if (!data.length) return;
+
+  const labels = data.map(d => d.timestamp.substring(0, 10));
+  const prices = data.map(d => d.price_usd);
+  const vols   = data.map(d => d.volume_24h);
+  const mcaps  = data.map(d => d.market_cap);
+  const color  = COLORS[sym];
+
+  // ---- Price chart ----
+  // Fetch prediction points from server
+  let forecastPts = [];
+  try {
+    const pr = await fetch(`/api/predictions/${sym}`);
+    const preds = await pr.json();
+    const pricePreds = preds.filter(p => p.target === 'price_usd');
+    forecastPts = pricePreds.map(p => ({ x: p.predicted_for.substring(0,10), y: p.predicted_value }));
+  } catch(e) {}
+
+  mkChart(`price-chart-${sym}`, {
+    type: 'line',
+    data: {
+      labels,
+      datasets: [
+        {
+          label: 'Price (USD)',
+          data: prices,
+          borderColor: color,
+          backgroundColor: color + '18',
+          fill: true,
+          tension: 0.3,
+          pointRadius: 0,
+          borderWidth: 2,
+        },
+        {
+          label: 'Forecast',
+          data: forecastPts,
+          borderColor: '#f0f6fc',
+          backgroundColor: '#f0f6fc18',
+          borderDash: [6, 4],
+          pointRadius: 5,
+          pointBackgroundColor: '#f0f6fc',
+          borderWidth: 2,
+          fill: false,
+        }
+      ]
+    },
+    options: darkChartOptions('Price USD', true)
+  });
+
+  // ---- Volume chart ----
+  mkChart(`volume-chart-${sym}`, {
+    type: 'bar',
+    data: {
+      labels,
+      datasets: [{
+        label: 'Volume 24h',
+        data: vols,
+        backgroundColor: color + '80',
+        borderColor: color,
+        borderWidth: 1,
+      }]
+    },
+    options: darkChartOptions('Volume USD', false)
+  });
+
+  // ---- Market Cap chart ----
+  mkChart(`mcap-chart-${sym}`, {
+    type: 'line',
+    data: {
+      labels,
+      datasets: [{
+        label: 'Market Cap',
+        data: mcaps,
+        borderColor: color,
+        backgroundColor: color + '18',
+        fill: true,
+        tension: 0.3,
+        pointRadius: 0,
+        borderWidth: 2,
+      }]
+    },
+    options: darkChartOptions('Market Cap USD', false)
+  });
+}
+
+async function loadCompareChart() {
+  const datasets = [];
+  for (const sym of Object.keys(ASSETS)) {
+    const data = await fetchPrices(sym, 180);
+    if (!data.length) continue;
+    const first = data[0].price_usd;
+    datasets.push({
+      label: sym,
+      data: data.map(d => ({ x: d.timestamp.substring(0,10), y: ((d.price_usd / first) * 100).toFixed(2) })),
+      borderColor: COLORS[sym],
+      backgroundColor: COLORS[sym] + '18',
+      fill: false,
+      tension: 0.3,
+      pointRadius: 0,
+      borderWidth: 2,
+    });
+  }
+
+  mkChart('compare-chart', {
+    type: 'line',
+    data: { datasets },
+    options: {
+      ...darkChartOptions('Normalised (base=100)', false),
+      parsing: false,
+    }
+  });
+}
+
+function darkChartOptions(yLabel, abbreviate) {
+  return {
+    responsive: true,
+    maintainAspectRatio: false,
+    interaction: { mode: 'index', intersect: false },
+    plugins: {
+      legend: { labels: { color: '#8b949e', boxWidth: 12 } },
+      tooltip: {
+        backgroundColor: '#161b22',
+        borderColor: '#30363d',
+        borderWidth: 1,
+        titleColor: '#e6edf3',
+        bodyColor: '#8b949e',
+        callbacks: {
+          label: ctx => {
+            const v = ctx.parsed.y;
+            if (!v && v !== 0) return '';
+            if (abbreviate && v > 1e9) return `${ctx.dataset.label}: $${(v/1e9).toFixed(2)}B`;
+            if (abbreviate && v > 1e6) return `${ctx.dataset.label}: $${(v/1e6).toFixed(2)}M`;
+            return `${ctx.dataset.label}: $${Number(v).toLocaleString('en-US', {maximumFractionDigits:2})}`;
+          }
+        }
+      }
+    },
+    scales: {
+      x: {
+        ticks: { color: '#8b949e', maxTicksLimit: 8, maxRotation: 0 },
+        grid:  { color: '#21262d' },
+      },
+      y: {
+        ticks: {
+          color: '#8b949e',
+          callback: v => {
+            if (v >= 1e9) return '$' + (v/1e9).toFixed(1) + 'B';
+            if (v >= 1e6) return '$' + (v/1e6).toFixed(1) + 'M';
+            if (v >= 1e3) return '$' + (v/1e3).toFixed(1) + 'K';
+            return '$' + v.toLocaleString();
+          }
+        },
+        grid: { color: '#21262d' },
+      }
+    }
+  };
+}
+
+// -----------------------------------------------------------------------
+// Range button
+// -----------------------------------------------------------------------
+function setRange(sym, days) {
+  delete historyCache[`${sym}-${days}`];
+  loadChartsForSymbol(sym, days);
+}
+
+// -----------------------------------------------------------------------
+// Actions
+// -----------------------------------------------------------------------
+async function triggerRefresh() {
+  const btn = event.target.closest('button');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span>Refreshing...';
+  try {
+    await fetch('/api/refresh', { method: 'POST' });
+    setTimeout(() => { btn.disabled = false; btn.innerHTML = '<i class="bi bi-arrow-clockwise me-1"></i>Refresh'; location.reload(); }, 5000);
+  } catch(e) { btn.disabled = false; }
+}
+
+async function triggerRetrain() {
+  const btn = event.target.closest('button');
+  const bar = document.getElementById('training-progress');
+  btn.disabled = true;
+  bar.classList.remove('d-none');
+  try {
+    await fetch('/api/retrain', { method: 'POST' });
+    document.getElementById('status-text').textContent = 'ML training in progress — this may take a few minutes...';
+    setTimeout(() => {
+      bar.classList.add('d-none');
+      btn.disabled = false;
+      location.reload();
+    }, 30000);
+  } catch(e) { btn.disabled = false; bar.classList.add('d-none'); }
+}
+
+// -----------------------------------------------------------------------
+// Status poll
+// -----------------------------------------------------------------------
+async function loadStatus() {
+  try {
+    const r = await fetch('/api/status');
+    const s = await r.json();
+    const rows = Object.entries(s.database_rows || {})
+      .map(([k,v]) => `${k}: ${v.toLocaleString()} rows`).join(' | ');
+    document.getElementById('status-text').textContent =
+      `DB: ${rows} | Models: ${s.models_trained} trained`;
+  } catch(e) {}
+}
+
+// -----------------------------------------------------------------------
+// Init
+// -----------------------------------------------------------------------
+document.addEventListener('DOMContentLoaded', () => {
+  loadStatus();
+  // Load first symbol charts
+  const firstSym = Object.keys(ASSETS)[0];
+  if (firstSym) loadChartsForSymbol(firstSym, 180);
+  // Poll status every 30s
+  setInterval(loadStatus, 30000);
+});
+</script>
+
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+</body>
+</html>
