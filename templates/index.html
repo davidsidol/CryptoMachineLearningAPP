@@ -21,11 +21,12 @@
   --bg-card: #161b22;
   --bg-card2: #1c2128;
   --border: #30363d;
-  --text: #e6edf3;
-  --text-muted: #8b949e;
+  --text: #ffffff;
+  --text-muted: #d0d7de;
   --btc: #F7931A;
   --eth: #627EEA;
   --sol: #9945FF;
+  --tao: #57C5B6;
   --green: #3fb950;
   --red: #f85149;
 }
@@ -36,19 +37,20 @@ body { background: var(--bg-dark); color: var(--text); font-family: 'Segoe UI', 
 .badge-btc { background: #F7931A22; color: #F7931A; border: 1px solid #F7931A55; }
 .badge-eth { background: #627EEA22; color: #627EEA; border: 1px solid #627EEA55; }
 .badge-sol { background: #9945FF22; color: #9945FF; border: 1px solid #9945FF55; }
+.badge-tao { background: #57C5B622; color: #57C5B6; border: 1px solid #57C5B655; }
 .price-value { font-size: 1.8rem; font-weight: 700; }
 .positive { color: var(--green); }
 .negative { color: var(--red); }
-.metric-label { font-size: 0.75rem; text-transform: uppercase; letter-spacing: .05em; color: var(--text-muted); }
-.metric-value { font-size: 1.1rem; font-weight: 600; }
+.metric-label { font-size: 0.75rem; text-transform: uppercase; letter-spacing: .05em; color: #ffffff; }
+.metric-value { font-size: 1.1rem; font-weight: 600; color: #ffffff; }
 .forecast-card { background: var(--bg-card2); border: 1px solid var(--border); border-radius: 10px; padding: 1rem; text-align: center; }
 .horizon-badge { font-size: 0.7rem; padding: 2px 8px; border-radius: 20px; font-weight: 700; }
 .horizon-1d  { background: #1f3d1f; color: var(--green); }
 .horizon-7d  { background: #1a2a3d; color: #58a6ff; }
 .horizon-30d { background: #3d1a2a; color: #ff7b93; }
-.tab-nav .nav-link { color: var(--text-muted); border: none; background: none; padding: .5rem 1rem; }
-.tab-nav .nav-link.active { color: var(--text); background: var(--bg-card2); border-radius: 8px; }
-.tab-nav .nav-link:hover { color: var(--text); }
+.tab-nav .nav-link { color: #d0d7de; border: none; background: none; padding: .5rem 1rem; }
+.tab-nav .nav-link.active { color: #ffffff; background: var(--bg-card2); border-radius: 8px; }
+.tab-nav .nav-link:hover { color: #ffffff; }
 .btn-outline-primary { border-color: #58a6ff; color: #58a6ff; }
 .btn-outline-primary:hover { background: #58a6ff22; }
 .btn-outline-warning { border-color: #d29922; color: #d29922; }
@@ -56,9 +58,9 @@ body { background: var(--bg-dark); color: var(--text); font-family: 'Segoe UI', 
 .progress-thin { height: 4px; border-radius: 2px; }
 .chart-container { position: relative; height: 280px; }
 .spinner-overlay { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; background: rgba(13,17,23,.6); border-radius: 12px; z-index: 10; }
-table th { color: var(--text-muted); font-weight: 500; font-size:.8rem; text-transform: uppercase; letter-spacing:.04em; }
-table td { color: var(--text); vertical-align: middle; }
-.table { --bs-table-bg: transparent; --bs-table-border-color: var(--border); }
+table th { color: #ffffff; font-weight: 500; font-size:.8rem; text-transform: uppercase; letter-spacing:.04em; }
+table td { color: #ffffff; vertical-align: middle; }
+h6 { color: #ffffff; }
 </style>
 </head>
 <body>
@@ -70,7 +72,7 @@ table td { color: var(--text); vertical-align: middle; }
       <i class="bi bi-graph-up-arrow text-info me-2"></i>Crypto ML Forecast
     </span>
     <div class="d-flex align-items-center gap-2 ms-auto">
-      <span class="text-muted small" id="last-refresh-label">
+      <span class="text-white small" id="last-refresh-label">
         {% if last_refresh.time %} Last refresh: {{ last_refresh.time[:19] }} {% else %} Initializing... {% endif %}
       </span>
       <button class="btn btn-sm btn-outline-primary" onclick="triggerRefresh()">
@@ -91,7 +93,7 @@ table td { color: var(--text); vertical-align: middle; }
       <div id="status-bar" class="card p-3 d-flex flex-row align-items-center gap-3">
         <div class="d-flex align-items-center gap-2">
           <span class="badge bg-success">LIVE</span>
-          <span class="text-muted small" id="status-text">Loading system status...</span>
+          <span class="text-white small" id="status-text">Loading system status...</span>
         </div>
         <div id="training-progress" class="ms-auto d-none">
           <div class="progress progress-thin" style="width:200px">
@@ -112,7 +114,7 @@ table td { color: var(--text); vertical-align: middle; }
         <div class="d-flex justify-content-between align-items-start mb-3">
           <div>
             <span class="badge badge-{{sym.lower()}} mb-1">{{ sym }}</span>
-            <div class="fw-semibold text-muted small">{{ info.name }}</div>
+            <div class="fw-semibold small" style="color:#ffffff">{{ info.name }}</div>
           </div>
           <div class="text-end">
             {% if p.get('pct_24h') is not none %}
@@ -184,7 +186,7 @@ table td { color: var(--text); vertical-align: middle; }
             {% endif %}
           </div>
           {% if pred.get('lower') and pred.get('upper') %}
-          <div class="text-muted small mt-1">
+          <div class="small mt-1" style="color:#ffffff">
             Range: ${{ '{:,.2f}'.format(pred.lower) }} – ${{ '{:,.2f}'.format(pred.upper) }}
           </div>
           {% endif %}
@@ -207,7 +209,7 @@ table td { color: var(--text); vertical-align: middle; }
     <div class="row g-3 mb-4">
       <div class="col-md-6">
         <div class="card p-3">
-          <h6 class="text-muted mb-3"><i class="bi bi-activity me-2"></i>Volume 24h Forecasts</h6>
+          <h6 class="mb-3" style="color:#ffffff"><i class="bi bi-activity me-2"></i>Volume 24h Forecasts</h6>
           <div class="row g-2">
             {% for h in horizons %}
             {% set vf = predictions.get(sym, {}).get(h|string, {}).get('volume_24h', {}) %}
@@ -223,7 +225,7 @@ table td { color: var(--text); vertical-align: middle; }
       </div>
       <div class="col-md-6">
         <div class="card p-3">
-          <h6 class="text-muted mb-3"><i class="bi bi-pie-chart me-2"></i>Market Cap Forecasts</h6>
+          <h6 class="mb-3" style="color:#ffffff"><i class="bi bi-pie-chart me-2"></i>Market Cap Forecasts</h6>
           <div class="row g-2">
             {% for h in horizons %}
             {% set mf = predictions.get(sym, {}).get(h|string, {}).get('market_cap', {}) %}
@@ -344,7 +346,7 @@ table td { color: var(--text); vertical-align: middle; }
 // State
 // -----------------------------------------------------------------------
 const ASSETS = {{ assets | tojson }};
-const COLORS = { BTC: '#F7931A', ETH: '#627EEA', SOL: '#9945FF' };
+const COLORS = { BTC: '#F7931A', ETH: '#627EEA', SOL: '#9945FF', TAO: '#57C5B6' };
 const charts = {};
 const historyCache = {};
 
@@ -511,13 +513,13 @@ function darkChartOptions(yLabel, abbreviate) {
     maintainAspectRatio: false,
     interaction: { mode: 'index', intersect: false },
     plugins: {
-      legend: { labels: { color: '#8b949e', boxWidth: 12 } },
+      legend: { labels: { color: '#ffffff', boxWidth: 12 } },
       tooltip: {
         backgroundColor: '#161b22',
         borderColor: '#30363d',
         borderWidth: 1,
-        titleColor: '#e6edf3',
-        bodyColor: '#8b949e',
+        titleColor: '#ffffff',
+        bodyColor: '#d0d7de',
         callbacks: {
           label: ctx => {
             const v = ctx.parsed.y;
@@ -531,12 +533,12 @@ function darkChartOptions(yLabel, abbreviate) {
     },
     scales: {
       x: {
-        ticks: { color: '#8b949e', maxTicksLimit: 8, maxRotation: 0 },
+        ticks: { color: '#ffffff', maxTicksLimit: 8, maxRotation: 0 },
         grid:  { color: '#21262d' },
       },
       y: {
         ticks: {
-          color: '#8b949e',
+          color: '#ffffff',
           callback: v => {
             if (v >= 1e9) return '$' + (v/1e9).toFixed(1) + 'B';
             if (v >= 1e6) return '$' + (v/1e6).toFixed(1) + 'M';

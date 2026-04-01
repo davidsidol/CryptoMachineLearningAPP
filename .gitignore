@@ -34,3 +34,6 @@ check_api.py
 check_frontend.py
 run_predict.py
 run_port5001.py
+
+# Trained ML models (binary, regenerated at startup)
+models/*.pkl

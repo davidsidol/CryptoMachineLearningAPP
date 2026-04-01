@@ -30,9 +30,10 @@ COINBASE_BASE_URL = "https://api.exchange.coinbase.com"
 
 # Crypto Assets to Track
 CRYPTO_ASSETS = {
-    "BTC": {"name": "Bitcoin",  "cmc_id": 1,    "coinbase_id": "BTC-USD", "color": "#F7931A"},
-    "ETH": {"name": "Ethereum", "cmc_id": 1027,  "coinbase_id": "ETH-USD", "color": "#627EEA"},
-    "SOL": {"name": "Solana",   "cmc_id": 5426,  "coinbase_id": "SOL-USD", "color": "#9945FF"},
+    "BTC": {"name": "Bitcoin",   "cmc_id": 1,     "coinbase_id": "BTC-USD", "color": "#F7931A"},
+    "ETH": {"name": "Ethereum",  "cmc_id": 1027,  "coinbase_id": "ETH-USD", "color": "#627EEA"},
+    "SOL": {"name": "Solana",    "cmc_id": 5426,  "coinbase_id": "SOL-USD", "color": "#9945FF"},
+    "TAO": {"name": "Bittensor", "cmc_id": 22974, "coinbase_id": None,       "color": "#57C5B6"},
 }
 
 # ML Configuration

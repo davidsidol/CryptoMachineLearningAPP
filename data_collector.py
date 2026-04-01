@@ -136,8 +136,12 @@ def fetch_coinbase_candles(symbol: str, days: int = 300, granularity: int = 8640
     """
     Fetch daily OHLCV candles from Coinbase Exchange public API.
     Coinbase limits to 300 candles per request; we paginate if needed.
+    Skips symbols with no Coinbase listing (e.g. TAO).
     """
-    product_id = CRYPTO_ASSETS[symbol]["coinbase_id"]
+    product_id = CRYPTO_ASSETS[symbol].get("coinbase_id")
+    if not product_id:
+        print(f"[CB] {symbol} has no Coinbase listing — skipping candles.")
+        return 0
     end_dt = datetime.now(timezone.utc)
     inserted = 0
     remaining = days
@@ -230,6 +234,7 @@ COINGECKO_IDS = {
     "BTC": "bitcoin",
     "ETH": "ethereum",
     "SOL": "solana",
+    "TAO": "bittensor",
 }
 COINGECKO_URL = "https://api.coingecko.com/api/v3"
 
