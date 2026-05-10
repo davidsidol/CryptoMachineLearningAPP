@@ -88,7 +88,7 @@ h6 { color: #ffffff; }
 <div class="container-fluid px-4 py-4">
 
   <!-- Startup loading banner (hidden once ready) -->
-  <div id="startup-banner" class="alert d-flex align-items-center gap-3 mb-3" style="background:#1c2128;border:1px solid #d29922;color:#e6edf3;display:none!important">
+  <div id="startup-banner" class="alert d-none align-items-center gap-3 mb-3" style="background:#1c2128;border:1px solid #d29922;color:#e6edf3;">
     <div class="spinner-border spinner-border-sm text-warning flex-shrink-0" role="status"></div>
     <div>
       <strong class="text-warning">Initialising…</strong>
@@ -626,9 +626,12 @@ async function pollStartup() {
     const badge  = document.getElementById('live-badge');
 
     if (s.done) {
-      // Ready — hide banner, show LIVE badge, load charts
-      banner.style.display = 'none';
-      badge.classList.replace('bg-warning','bg-success');
+      // Ready — hide banner using d-none (works against Bootstrap's d-flex !important)
+      banner.classList.add('d-none');
+      banner.classList.remove('d-flex');
+      // Ensure LIVE badge is green
+      badge.classList.remove('bg-warning');
+      badge.classList.add('bg-success');
       badge.textContent = 'LIVE';
       if (!_startupDone) {
         _startupDone = true;
@@ -639,14 +642,16 @@ async function pollStartup() {
       }
     } else {
       // Still initialising — show banner with current stage
-      banner.style.removeProperty('display');
-      badge.classList.replace('bg-success','bg-warning');
+      banner.classList.remove('d-none');
+      banner.classList.add('d-flex');
+      badge.classList.remove('bg-success');
+      badge.classList.add('bg-warning');
       badge.textContent = 'INIT';
       const stageEl = document.getElementById('startup-stage');
       if (stageEl) stageEl.textContent = s.stage || 'Please wait…';
       if (s.error) {
         banner.style.borderColor = '#f85149';
-        stageEl.textContent = 'Error: ' + s.error;
+        if (stageEl) stageEl.textContent = 'Error: ' + s.error;
       }
     }
   } catch(e) {

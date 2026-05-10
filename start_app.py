@@ -68,7 +68,6 @@ def _run_startup():
     print(f"  Crypto ML Dashboard is ready at:")
     print(f"  http://localhost:{FLASK_PORT}")
     print(f"{'='*52}\n")
-        print(f"[STARTUP ERROR] {e}")
 
 
 def _background_refresh():

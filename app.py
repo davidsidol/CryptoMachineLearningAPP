@@ -17,6 +17,7 @@ from config import (
 
 app = Flask(__name__)
 app.secret_key = FLASK_SECRET_KEY
+app.config['TEMPLATES_AUTO_RELOAD'] = True
 
 # Background refresh state
 _refresh_lock = threading.Lock()
