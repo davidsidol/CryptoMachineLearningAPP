@@ -87,12 +87,21 @@ h6 { color: #ffffff; }
 
 <div class="container-fluid px-4 py-4">
 
+  <!-- Startup loading banner (hidden once ready) -->
+  <div id="startup-banner" class="alert d-flex align-items-center gap-3 mb-3" style="background:#1c2128;border:1px solid #d29922;color:#e6edf3;display:none!important">
+    <div class="spinner-border spinner-border-sm text-warning flex-shrink-0" role="status"></div>
+    <div>
+      <strong class="text-warning">Initialising…</strong>
+      <span id="startup-stage" class="ms-2 text-muted small">Please wait while models and data load.</span>
+    </div>
+  </div>
+
   <!-- Status bar -->
   <div class="row g-2 mb-4">
     <div class="col-12">
       <div id="status-bar" class="card p-3 d-flex flex-row align-items-center gap-3">
         <div class="d-flex align-items-center gap-2">
-          <span class="badge bg-success">LIVE</span>
+          <span class="badge bg-success" id="live-badge">LIVE</span>
           <span class="text-white small" id="status-text">Loading system status...</span>
         </div>
         <div id="training-progress" class="ms-auto d-none">
@@ -604,14 +613,56 @@ async function loadStatus() {
 }
 
 // -----------------------------------------------------------------------
+// Startup initialisation banner
+// -----------------------------------------------------------------------
+let _startupDone = false;
+let _startupPollId = null;
+
+async function pollStartup() {
+  try {
+    const r = await fetch('/api/startup_status');
+    const s = await r.json();
+    const banner = document.getElementById('startup-banner');
+    const badge  = document.getElementById('live-badge');
+
+    if (s.done) {
+      // Ready — hide banner, show LIVE badge, load charts
+      banner.style.display = 'none';
+      badge.classList.replace('bg-warning','bg-success');
+      badge.textContent = 'LIVE';
+      if (!_startupDone) {
+        _startupDone = true;
+        clearInterval(_startupPollId);
+        loadStatus();
+        const firstSym = Object.keys(ASSETS)[0];
+        if (firstSym) loadChartsForSymbol(firstSym, 180);
+      }
+    } else {
+      // Still initialising — show banner with current stage
+      banner.style.removeProperty('display');
+      badge.classList.replace('bg-success','bg-warning');
+      badge.textContent = 'INIT';
+      const stageEl = document.getElementById('startup-stage');
+      if (stageEl) stageEl.textContent = s.stage || 'Please wait…';
+      if (s.error) {
+        banner.style.borderColor = '#f85149';
+        stageEl.textContent = 'Error: ' + s.error;
+      }
+    }
+  } catch(e) {
+    // Flask might not be reachable yet — keep polling
+  }
+}
+
+// -----------------------------------------------------------------------
 // Init
 // -----------------------------------------------------------------------
 document.addEventListener('DOMContentLoaded', () => {
-  loadStatus();
-  // Load first symbol charts
-  const firstSym = Object.keys(ASSETS)[0];
-  if (firstSym) loadChartsForSymbol(firstSym, 180);
-  // Poll status every 30s
+  // Poll startup state every 3 seconds until ready
+  _startupPollId = setInterval(pollStartup, 3000);
+  pollStartup(); // immediate first check
+
+  // Poll DB status every 30s (only meaningful once startup done)
   setInterval(loadStatus, 30000);
 });
 </script>

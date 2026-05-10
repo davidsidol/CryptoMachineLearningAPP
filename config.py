@@ -43,7 +43,7 @@ MIN_TRAINING_ROWS = 60              # minimum rows before training
 
 # Flask Configuration
 FLASK_SECRET_KEY = "crypto_ml_secret_key_2024"
-FLASK_PORT = 5001
+FLASK_PORT = 5050
 FLASK_DEBUG = False
 
 # Scheduler - how often to refresh live data (minutes)
