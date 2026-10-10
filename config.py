@@ -30,10 +30,13 @@ COINBASE_BASE_URL = "https://api.exchange.coinbase.com"
 
 # Crypto Assets to Track
 CRYPTO_ASSETS = {
-    "BTC": {"name": "Bitcoin",   "cmc_id": 1,     "coinbase_id": "BTC-USD", "color": "#F7931A"},
-    "ETH": {"name": "Ethereum",  "cmc_id": 1027,  "coinbase_id": "ETH-USD", "color": "#627EEA"},
-    "SOL": {"name": "Solana",    "cmc_id": 5426,  "coinbase_id": "SOL-USD", "color": "#9945FF"},
-    "TAO": {"name": "Bittensor", "cmc_id": 22974, "coinbase_id": None,       "color": "#57C5B6"},
+    "BTC":  {"name": "Bitcoin",    "cmc_id": 1,     "coinbase_id": "BTC-USD",  "color": "#F7931A"},
+    "ETH":  {"name": "Ethereum",   "cmc_id": 1027,  "coinbase_id": "ETH-USD",  "color": "#627EEA"},
+    "SOL":  {"name": "Solana",     "cmc_id": 5426,  "coinbase_id": "SOL-USD",  "color": "#9945FF"},
+    "TAO":  {"name": "Bittensor",  "cmc_id": 22974, "coinbase_id": None,        "color": "#57C5B6"},
+    "AVAX": {"name": "Avalanche",  "cmc_id": 5805,  "coinbase_id": "AVAX-USD", "color": "#E84142"},
+    "NEAR": {"name": "NEAR",       "cmc_id": 6535,  "coinbase_id": "NEAR-USD", "color": "#00C08B"},
+    "LINK": {"name": "Chainlink",  "cmc_id": 1975,  "coinbase_id": "LINK-USD", "color": "#2A5ADA"},
 }
 
 # ML Configuration

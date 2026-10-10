@@ -231,10 +231,13 @@ def sync_ohlcv_to_prices(symbol: str):
 # ---------------------------------------------------------------------------
 
 COINGECKO_IDS = {
-    "BTC": "bitcoin",
-    "ETH": "ethereum",
-    "SOL": "solana",
-    "TAO": "bittensor",
+    "BTC":  "bitcoin",
+    "ETH":  "ethereum",
+    "SOL":  "solana",
+    "TAO":  "bittensor",
+    "AVAX": "avalanche-2",
+    "NEAR": "near",
+    "LINK": "chainlink",
 }
 COINGECKO_URL = "https://api.coingecko.com/api/v3"
 
