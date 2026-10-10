@@ -129,7 +129,7 @@ On first run, `start_app.py` will:
 
 ## Usage
 
-Open your browser to **http://localhost:5001**
+Open your browser to **http://localhost:8080**
 
 ### API Endpoints
 
@@ -155,7 +155,7 @@ DB_NAME              = "CryptoML"            # Database name
 COINMARKETCAP_API_KEY = "your_key_here"     # CMC API key
 PREDICTION_HORIZONS  = [1, 7, 30]           # Forecast horizons (days)
 DATA_REFRESH_MINUTES = 60                    # Background refresh interval
-FLASK_PORT           = 5001                  # Web server port
+FLASK_PORT           = 8080                  # Web server port
 ```
 
 ---
