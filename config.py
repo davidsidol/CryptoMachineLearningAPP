@@ -5,7 +5,7 @@ Configuration for Crypto ML Forecasting Application
 # Database Configuration
 DB_SERVER = r".\IDOLML"
 DB_NAME = "CryptoML"
-DB_DRIVER = "ODBC Driver 17 for SQL Server"
+DB_DRIVER = "ODBC Driver 18 for SQL Server"
 DB_CONN_STR = (
     f"DRIVER={{{DB_DRIVER}}};"
     f"SERVER={DB_SERVER};"
