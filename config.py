@@ -40,7 +40,7 @@ CRYPTO_ASSETS = {
 }
 
 # ML Configuration
-PREDICTION_HORIZONS = [1, 7, 30]   # days
+PREDICTION_HORIZONS = [1, 3, 7]    # days (1=24hr, 3=3-day, 7=7-day)
 MODEL_DIR = "models"
 MIN_TRAINING_ROWS = 60              # minimum rows before training
 
@@ -49,5 +49,6 @@ FLASK_SECRET_KEY = "crypto_ml_secret_key_2024"
 FLASK_PORT = 8080
 FLASK_DEBUG = False
 
-# Scheduler - how often to refresh live data (minutes)
-DATA_REFRESH_MINUTES = 60
+# Scheduler
+DATA_REFRESH_MINUTES = 60          # how often to pull new market data
+PREDICTION_REFRESH_HOURS = 3       # how often to regenerate ML predictions

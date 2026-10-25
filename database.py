@@ -127,6 +127,25 @@ def setup_database():
             )
         """)
 
+        # Prediction outcomes — actual vs predicted once the date arrives
+        cursor.execute("""
+            IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='prediction_outcomes' AND xtype='U')
+            CREATE TABLE prediction_outcomes (
+                id                BIGINT IDENTITY(1,1) PRIMARY KEY,
+                symbol            NVARCHAR(10)  NOT NULL,
+                target            NVARCHAR(50)  NOT NULL,
+                horizon_days      INT           NOT NULL,
+                predicted_for     DATE          NOT NULL,
+                predicted_value   FLOAT         NOT NULL,
+                actual_value      FLOAT         NOT NULL,
+                abs_error         FLOAT         NOT NULL,
+                pct_error         FLOAT         NOT NULL,
+                direction_correct BIT           NOT NULL,
+                evaluated_at      DATETIME2     DEFAULT GETUTCDATE(),
+                CONSTRAINT UQ_outcome UNIQUE (symbol, target, horizon_days, predicted_for)
+            )
+        """)
+
         print("[DB] All tables created/verified.")
 
 
@@ -283,3 +302,79 @@ def get_row_count(symbol: str) -> int:
         cursor.execute(
             "SELECT COUNT(*) FROM crypto_prices WHERE symbol = ?", symbol)
         return cursor.fetchone()[0]
+
+
+def get_unevaluated_predictions() -> pd.DataFrame:
+    """
+    Return the latest prediction for each (symbol, target, horizon, predicted_for)
+    where predicted_for has passed and no outcome has been recorded yet.
+    """
+    with get_connection() as conn:
+        query = """
+            WITH latest AS (
+                SELECT symbol, target, horizon_days,
+                       CAST(predicted_for AS DATE) AS predicted_for,
+                       predicted_value,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY symbol, target, horizon_days, CAST(predicted_for AS DATE)
+                           ORDER BY generated_at DESC
+                       ) AS rn
+                FROM predictions
+                WHERE CAST(predicted_for AS DATE) <= CAST(GETUTCDATE() AS DATE)
+            )
+            SELECT l.symbol, l.target, l.horizon_days, l.predicted_for, l.predicted_value
+            FROM latest l
+            WHERE l.rn = 1
+              AND NOT EXISTS (
+                  SELECT 1 FROM prediction_outcomes o
+                  WHERE o.symbol = l.symbol
+                    AND o.target = l.target
+                    AND o.horizon_days = l.horizon_days
+                    AND o.predicted_for = l.predicted_for
+              )
+        """
+        return pd.read_sql(query, conn, parse_dates=["predicted_for"])
+
+
+def save_prediction_outcome(symbol: str, target: str, horizon: int,
+                             predicted_for, predicted_value: float,
+                             actual_value: float, abs_error: float,
+                             pct_error: float, direction_correct: bool):
+    """Record how accurate a past prediction turned out to be."""
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            MERGE prediction_outcomes AS tgt
+            USING (SELECT ? AS symbol, ? AS target, ? AS horizon_days, CAST(? AS DATE) AS predicted_for) AS src
+            ON tgt.symbol = src.symbol AND tgt.target = src.target
+               AND tgt.horizon_days = src.horizon_days AND tgt.predicted_for = src.predicted_for
+            WHEN NOT MATCHED THEN
+                INSERT (symbol, target, horizon_days, predicted_for, predicted_value,
+                        actual_value, abs_error, pct_error, direction_correct)
+                VALUES (?, ?, ?, CAST(? AS DATE), ?, ?, ?, ?, ?);
+        """, symbol, target, horizon, str(predicted_for)[:10],
+             symbol, target, horizon, str(predicted_for)[:10],
+             predicted_value, actual_value, abs_error, pct_error,
+             1 if direction_correct else 0)
+
+
+def get_prediction_accuracy() -> pd.DataFrame:
+    """
+    Return per-model accuracy stats from evaluated predictions.
+    Columns: symbol, target, horizon_days, sample_count,
+             directional_accuracy (%), mean_abs_pct_error (%)
+    """
+    with get_connection() as conn:
+        query = """
+            SELECT
+                symbol,
+                target,
+                horizon_days,
+                COUNT(*)                                                    AS sample_count,
+                SUM(CASE WHEN direction_correct = 1 THEN 1 ELSE 0 END) * 100.0 / COUNT(*) AS directional_accuracy,
+                AVG(ABS(pct_error))                                         AS mean_abs_pct_error
+            FROM prediction_outcomes
+            GROUP BY symbol, target, horizon_days
+            ORDER BY symbol, target, horizon_days
+        """
+        return pd.read_sql(query, conn)

@@ -52,8 +52,8 @@ body { background: var(--bg-dark); color: var(--text); font-family: 'Segoe UI', 
 .forecast-card { background: var(--bg-card2); border: 1px solid var(--border); border-radius: 10px; padding: 1rem; text-align: center; }
 .horizon-badge { font-size: 0.7rem; padding: 2px 8px; border-radius: 20px; font-weight: 700; }
 .horizon-1d  { background: #1f3d1f; color: var(--green); }
-.horizon-7d  { background: #1a2a3d; color: #58a6ff; }
-.horizon-30d { background: #3d1a2a; color: #ff7b93; }
+.horizon-3d  { background: #1f2d3d; color: #79c0ff; }
+.horizon-7d  { background: #3d1a2a; color: #ff7b93; }
 .tab-nav .nav-link { color: #d0d7de; border: none; background: none; padding: .5rem 1rem; }
 .tab-nav .nav-link.active { color: #ffffff; background: var(--bg-card2); border-radius: 8px; }
 .tab-nav .nav-link:hover { color: #ffffff; }
@@ -121,6 +121,7 @@ h6 { color: #ffffff; }
   </div>
 
   <!-- Price overview cards -->
+  {% set horizon_labels = {1: '24hr', 3: '3-Day', 7: '7-Day'} %}
   <div class="row g-3 mb-4">
     {% for sym, info in assets.items() %}
     {% set p = prices.get(sym, {}) %}
@@ -142,7 +143,7 @@ h6 { color: #ffffff; }
         <div class="price-value mb-2" style="color: {{ info.color }}">
           {% if p.get('price') %}${{ '{:,.2f}'.format(p.price) }}{% else %}<span class="text-muted">Loading...</span>{% endif %}
         </div>
-        <div class="row g-2 text-center">
+        <div class="row g-2 text-center mb-2">
           <div class="col-6">
             <div class="metric-label">Volume 24h</div>
             <div class="metric-value">
@@ -154,6 +155,27 @@ h6 { color: #ffffff; }
             <div class="metric-value">
               {% if p.get('market_cap') %}${{ '{:,.0f}'.format(p.market_cap / 1e9) }}B{% else %}–{% endif %}
             </div>
+          </div>
+        </div>
+        <!-- Price Forecasts -->
+        <div class="pt-2" style="border-top:1px solid var(--border)">
+          <div class="metric-label mb-2"><i class="bi bi-lightning-charge me-1"></i>Price Forecast</div>
+          <div class="row g-1 text-center">
+            {% for h in horizons %}
+            {% set pred = predictions.get(sym, {}).get(h|string, {}).get('price_usd', {}) %}
+            <div class="col-4">
+              <div style="font-size:.65rem; color:#8b949e; text-transform:uppercase; letter-spacing:.04em;">{{ horizon_labels[h] }}</div>
+              <div style="font-size:.95rem; font-weight:700; color:{{ info.color }}">
+                {% if pred.get('value') %}${{ '{:,.2f}'.format(pred.value) }}{% else %}<span style="color:#8b949e">–</span>{% endif %}
+              </div>
+              {% if pred.get('value') and p.get('price') %}
+                {% set diff = ((pred.value - p.price) / p.price * 100) %}
+                <div style="font-size:.65rem;" class="{{ 'positive' if diff >= 0 else 'negative' }}">{{ '+' if diff >= 0 else '' }}{{ '%.1f'|format(diff) }}%</div>
+              {% else %}
+                <div style="font-size:.65rem; color:#8b949e;">–</div>
+              {% endif %}
+            </div>
+            {% endfor %}
           </div>
         </div>
       </div>
@@ -182,6 +204,7 @@ h6 { color: #ffffff; }
   <div id="panel-{{ sym }}" class="tab-panel {{ '' if loop.first else 'd-none' }}">
 
     <!-- Forecast cards -->
+    {% set horizon_labels = {1: '24hr', 3: '3-Day', 7: '7-Day'} %}
     <div class="row g-3 mb-4">
       <div class="col-12">
         <h6 class="text-muted mb-3"><i class="bi bi-lightning-charge me-2"></i>ML Price Forecasts</h6>
@@ -191,7 +214,7 @@ h6 { color: #ffffff; }
       <div class="col-md-4">
         <div class="forecast-card">
           <div class="mb-2">
-            <span class="horizon-badge horizon-{{ h }}d">{{ h }}-Day Forecast</span>
+            <span class="horizon-badge horizon-{{ h }}d">{{ horizon_labels[h] }} Forecast</span>
           </div>
           <div style="font-size:1.6rem; font-weight:700; color:{{ info.color }}">
             {% if pred.get('value') %}
@@ -214,6 +237,18 @@ h6 { color: #ffffff; }
             <div class="mt-2 {{ 'positive' if diff >= 0 else 'negative' }}" style="font-size:.85rem; font-weight:600;">
               {{ '+' if diff >= 0 else '' }}{{ '%.2f'|format(diff) }}% vs now
             </div>
+          {% endif %}
+          {% set acc = accuracy.get(sym, {}).get(h|string, {}).get('price_usd', {}) %}
+          {% if acc.get('sample_count', 0) >= 3 %}
+          <div class="mt-2 pt-2" style="border-top:1px solid #30363d;">
+            <div style="font-size:.68rem; color:#8b949e;">
+              Model accuracy ({{ acc.sample_count }} samples)
+            </div>
+            <div style="font-size:.75rem; font-weight:600; color:{{ '#3fb950' if acc.directional_accuracy >= 55 else '#f85149' }};">
+              {{ acc.directional_accuracy }}% directional
+            </div>
+            <div style="font-size:.65rem; color:#8b949e;">±{{ acc.mean_abs_pct_error }}% avg error</div>
+          </div>
           {% endif %}
         </div>
       </div>
@@ -318,9 +353,10 @@ h6 { color: #ffffff; }
                 <tr>
                   <th>Asset</th>
                   <th>Current Price</th>
-                  <th>1-Day Forecast</th><th>1D Change</th>
-                  <th>7-Day Forecast</th><th>7D Change</th>
-                  <th>30-Day Forecast</th><th>30D Change</th>
+                  <th>24hr Forecast</th><th>24hr Δ</th>
+                  <th>3-Day Forecast</th><th>3D Δ</th>
+                  <th>7-Day Forecast</th><th>7D Δ</th>
+                  <th>Directional Accuracy</th>
                 </tr>
               </thead>
               <tbody id="forecast-table-body">
@@ -344,6 +380,19 @@ h6 { color: #ffffff; }
                     {% else %}–{% endif %}
                   </td>
                   {% endfor %}
+                  <td>
+                    {% set accs = [] %}
+                    {% for h in horizons %}
+                      {% set a = accuracy.get(sym, {}).get(h|string, {}).get('price_usd', {}) %}
+                      {% if a.get('sample_count', 0) >= 3 %}{% set _ = accs.append(a.directional_accuracy) %}{% endif %}
+                    {% endfor %}
+                    {% if accs %}
+                      {% set avg_acc = (accs | sum) / (accs | length) %}
+                      <span style="font-weight:600; color:{{ '#3fb950' if avg_acc >= 55 else '#f85149' }};">
+                        {{ '%.0f'|format(avg_acc) }}%
+                      </span>
+                    {% else %}<span style="color:#8b949e;">—</span>{% endif %}
+                  </td>
                 </tr>
                 {% endfor %}
               </tbody>

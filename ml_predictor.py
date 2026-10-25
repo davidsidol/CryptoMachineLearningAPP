@@ -325,6 +325,115 @@ def get_prediction_summary() -> dict:
     return summary
 
 
+def evaluate_past_predictions() -> int:
+    """
+    For every prediction whose date has now passed, look up the actual value
+    in crypto_prices, compute accuracy metrics, and store in prediction_outcomes.
+    Returns the number of new outcomes recorded.
+    """
+    pending = db.get_unevaluated_predictions()
+    if pending.empty:
+        return 0
+
+    evaluated = 0
+    # Load price history once per symbol to avoid repeated queries
+    history_cache = {}
+
+    for _, row in pending.iterrows():
+        sym    = row["symbol"]
+        target = row["target"]
+        horizon = int(row["horizon_days"])
+        pred_date = pd.Timestamp(row["predicted_for"]).date()
+        pred_val  = float(row["predicted_value"])
+
+        if sym not in history_cache:
+            history_cache[sym] = db.get_price_history(sym, days=730)
+
+        hist = history_cache[sym]
+        if hist.empty:
+            continue
+
+        hist = hist.copy()
+        hist["date"] = pd.to_datetime(hist["timestamp"]).dt.date
+
+        col_map = {
+            "price_usd":  "price_usd",
+            "volume_24h": "volume_24h",
+            "market_cap": "market_cap",
+        }
+        col = col_map.get(target)
+        if not col:
+            continue
+
+        # Actual value on the prediction date
+        actual_row = hist[hist["date"] == pred_date]
+        if actual_row.empty or actual_row.iloc[0][col] is None:
+            continue
+        actual_val = float(actual_row.iloc[0][col])
+        if actual_val == 0:
+            continue
+
+        abs_err = abs(pred_val - actual_val)
+        pct_err = (pred_val - actual_val) / actual_val * 100
+
+        # Direction: was the prediction trending the right way vs the base price?
+        from datetime import timedelta
+        base_date = pred_date - timedelta(days=horizon)
+        base_row  = hist[hist["date"] == base_date]
+        if base_row.empty:
+            # Use the nearest earlier date
+            earlier = hist[hist["date"] < pred_date]
+            base_row = earlier.tail(horizon + 1).head(1)
+
+        if not base_row.empty and base_row.iloc[0][col] is not None:
+            base_val = float(base_row.iloc[0][col])
+            if base_val > 0:
+                direction_correct = (pred_val > base_val) == (actual_val > base_val)
+            else:
+                direction_correct = False
+        else:
+            direction_correct = False
+
+        try:
+            db.save_prediction_outcome(
+                symbol=sym,
+                target=target,
+                horizon=horizon,
+                predicted_for=pred_date,
+                predicted_value=pred_val,
+                actual_value=actual_val,
+                abs_error=abs_err,
+                pct_error=pct_err,
+                direction_correct=direction_correct,
+            )
+            evaluated += 1
+        except Exception as e:
+            print(f"[EVAL] Could not save outcome {sym}/{target}/{horizon}d/{pred_date}: {e}")
+
+    if evaluated:
+        print(f"[EVAL] Recorded {evaluated} new prediction outcomes.")
+    return evaluated
+
+
+def get_accuracy_summary() -> dict:
+    """
+    Return a nested dict of model accuracy stats:
+    { symbol -> { horizon_str -> { target -> {directional_accuracy, mean_abs_pct_error, sample_count} } } }
+    """
+    df = db.get_prediction_accuracy()
+    summary = {}
+    for _, row in df.iterrows():
+        sym  = row["symbol"]
+        hor  = str(int(row["horizon_days"]))
+        tgt  = row["target"]
+        summary.setdefault(sym, {}).setdefault(hor, {})[tgt] = {
+            "directional_accuracy": round(float(row["directional_accuracy"]), 1),
+            "mean_abs_pct_error":   round(float(row["mean_abs_pct_error"]), 2),
+            "sample_count":         int(row["sample_count"]),
+        }
+    return summary
+
+
 def get_feature_importance(symbol: str, target: str, horizon: int) -> dict:
     """Return top-20 feature importances for a model."""
     meta = _load_model(symbol, target, horizon)

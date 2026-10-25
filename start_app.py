@@ -9,7 +9,7 @@ import os, sys, threading, time
 import database as db
 import ml_predictor as ml
 import data_collector as dc
-from config import CRYPTO_ASSETS, FLASK_PORT, DATA_REFRESH_MINUTES
+from config import CRYPTO_ASSETS, FLASK_PORT, DATA_REFRESH_MINUTES, PREDICTION_REFRESH_HOURS
 
 # ── Shared startup state (read by Flask routes) ──────────────────────────────
 startup_state = {
@@ -55,6 +55,10 @@ def _run_startup():
         startup_state["stage"] = "Generating predictions…"
         ml.predict_all()
 
+        # 5. Evaluate past predictions (score any that have now matured)
+        startup_state["stage"] = "Evaluating past prediction accuracy…"
+        ml.evaluate_past_predictions()
+
         startup_state["stage"] = "Ready"
         startup_state["done"]  = True
 
@@ -70,18 +74,31 @@ def _run_startup():
     print(f"{'='*52}\n")
 
 
-def _background_refresh():
-    """Periodic data + prediction refresh (every DATA_REFRESH_MINUTES)."""
+def _data_refresh_loop():
+    """Pull new market data every DATA_REFRESH_MINUTES, then evaluate past predictions."""
     while True:
         time.sleep(DATA_REFRESH_MINUTES * 60)
         if not startup_state["done"]:
             continue
         try:
-            print("[REFRESH] Refreshing data and predictions…")
+            print("[REFRESH] Refreshing market data…")
             dc.refresh_all()
-            ml.predict_all()
+            ml.evaluate_past_predictions()
         except Exception as e:
             print(f"[REFRESH ERROR] {e}")
+
+
+def _prediction_refresh_loop():
+    """Regenerate ML predictions every PREDICTION_REFRESH_HOURS."""
+    while True:
+        time.sleep(PREDICTION_REFRESH_HOURS * 3600)
+        if not startup_state["done"]:
+            continue
+        try:
+            print("[PREDICT] Regenerating predictions…")
+            ml.predict_all()
+        except Exception as e:
+            print(f"[PREDICT ERROR] {e}")
 
 
 if __name__ == "__main__":
@@ -101,9 +118,9 @@ if __name__ == "__main__":
     t_init = threading.Thread(target=_run_startup, daemon=True)
     t_init.start()
 
-    # Fire periodic refresh in background
-    t_refresh = threading.Thread(target=_background_refresh, daemon=True)
-    t_refresh.start()
+    # Fire periodic refresh threads
+    threading.Thread(target=_data_refresh_loop, daemon=True).start()
+    threading.Thread(target=_prediction_refresh_loop, daemon=True).start()
 
     print(f"[STARTUP] Flask binding on port {FLASK_PORT} — initialisation running in background…")
     print(f"[STARTUP] Open http://localhost:{FLASK_PORT} — a loading banner will show until ready.\n")

@@ -12,7 +12,7 @@ import data_collector as dc
 from config import (
     FLASK_SECRET_KEY, FLASK_PORT, FLASK_DEBUG,
     CRYPTO_ASSETS, PREDICTION_HORIZONS,
-    DATA_REFRESH_MINUTES
+    DATA_REFRESH_MINUTES, PREDICTION_REFRESH_HOURS
 )
 
 app = Flask(__name__)
@@ -24,21 +24,28 @@ _refresh_lock = threading.Lock()
 _last_refresh = {"time": None, "status": "never"}
 
 
-def _background_refresh():
-    """Periodically refresh data and regenerate predictions."""
+def _data_refresh_loop():
+    """Pull new market data every DATA_REFRESH_MINUTES, then score past predictions."""
     while True:
         time.sleep(DATA_REFRESH_MINUTES * 60)
         with _refresh_lock:
             try:
-                print("[APP] Background refresh starting...")
                 dc.refresh_all()
-                ml.predict_all()
+                ml.evaluate_past_predictions()
                 _last_refresh["time"] = datetime.now(timezone.utc).isoformat()
                 _last_refresh["status"] = "ok"
-                print("[APP] Background refresh complete.")
             except Exception as e:
                 _last_refresh["status"] = f"error: {e}"
-                print(f"[APP] Background refresh error: {e}")
+
+
+def _prediction_refresh_loop():
+    """Regenerate ML predictions every PREDICTION_REFRESH_HOURS."""
+    while True:
+        time.sleep(PREDICTION_REFRESH_HOURS * 3600)
+        try:
+            ml.predict_all()
+        except Exception as e:
+            print(f"[APP] Prediction refresh error: {e}")
 
 
 # ---------------------------------------------------------------------------
@@ -70,11 +77,18 @@ def index():
         print(f"[APP] Error fetching predictions: {e}")
         predictions = {}
 
+    try:
+        accuracy = ml.get_accuracy_summary()
+    except Exception as e:
+        print(f"[APP] Error fetching accuracy: {e}")
+        accuracy = {}
+
     return render_template(
         "index.html",
         assets=CRYPTO_ASSETS,
         prices=prices,
         predictions=predictions,
+        accuracy=accuracy,
         horizons=PREDICTION_HORIZONS,
         last_refresh=_last_refresh,
     )
@@ -120,6 +134,15 @@ def api_ohlcv(symbol):
             "symbol": symbol,
             "data": df.to_dict("records"),
         })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/accuracy")
+def api_accuracy():
+    """Return prediction accuracy stats for all models."""
+    try:
+        return jsonify(ml.get_accuracy_summary())
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -250,10 +273,9 @@ def startup():
     print("[STARTUP] Generating initial predictions...")
     ml.predict_all()
 
-    # Start background refresh thread
-    t = threading.Thread(target=_background_refresh, daemon=True)
-    t.start()
-    print(f"[STARTUP] Background refresh every {DATA_REFRESH_MINUTES} minutes.")
+    threading.Thread(target=_data_refresh_loop, daemon=True).start()
+    threading.Thread(target=_prediction_refresh_loop, daemon=True).start()
+    print(f"[STARTUP] Data refresh every {DATA_REFRESH_MINUTES}min, predictions every {PREDICTION_REFRESH_HOURS}hr.")
 
 
 if __name__ == "__main__":
