@@ -121,7 +121,7 @@ h6 { color: #ffffff; }
   </div>
 
   <!-- Price overview cards -->
-  {% set horizon_labels = {1: '24hr', 3: '3-Day', 7: '7-Day'} %}
+  {% set horizon_labels = {1: '24hr', 3: '3-Day', 7: '7-Day', 30: '30-Day'} %}
   <div class="row g-3 mb-4">
     {% for sym, info in assets.items() %}
     {% set p = prices.get(sym, {}) %}
@@ -204,7 +204,7 @@ h6 { color: #ffffff; }
   <div id="panel-{{ sym }}" class="tab-panel {{ '' if loop.first else 'd-none' }}">
 
     <!-- Forecast cards -->
-    {% set horizon_labels = {1: '24hr', 3: '3-Day', 7: '7-Day'} %}
+    {% set horizon_labels = {1: '24hr', 3: '3-Day', 7: '7-Day', 30: '30-Day'} %}
     <div class="row g-3 mb-4">
       <div class="col-12">
         <h6 class="text-muted mb-3"><i class="bi bi-lightning-charge me-2"></i>ML Price Forecasts</h6>
@@ -238,7 +238,7 @@ h6 { color: #ffffff; }
               {{ '+' if diff >= 0 else '' }}{{ '%.2f'|format(diff) }}% vs now
             </div>
           {% endif %}
-          {% set acc = accuracy.get(sym, {}).get(h|string, {}).get('price_usd', {}) %}
+          {% set acc = (accuracy if accuracy is defined else {}).get(sym, {}).get(h|string, {}).get('price_usd', {}) %}
           {% if acc.get('sample_count', 0) >= 3 %}
           <div class="mt-2 pt-2" style="border-top:1px solid #30363d;">
             <div style="font-size:.68rem; color:#8b949e;">
@@ -383,7 +383,7 @@ h6 { color: #ffffff; }
                   <td>
                     {% set accs = [] %}
                     {% for h in horizons %}
-                      {% set a = accuracy.get(sym, {}).get(h|string, {}).get('price_usd', {}) %}
+                      {% set a = (accuracy if accuracy is defined else {}).get(sym, {}).get(h|string, {}).get('price_usd', {}) %}
                       {% if a.get('sample_count', 0) >= 3 %}{% set _ = accs.append(a.directional_accuracy) %}{% endif %}
                     {% endfor %}
                     {% if accs %}
