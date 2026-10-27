@@ -64,6 +64,23 @@ body { background: var(--bg-dark); color: var(--text); font-family: 'Segoe UI', 
 .progress-thin { height: 4px; border-radius: 2px; }
 .chart-container { position: relative; height: 280px; }
 .spinner-overlay { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; background: rgba(13,17,23,.6); border-radius: 12px; z-index: 10; }
+.rec-section { background: var(--bg-card); border: 1px solid var(--border); border-radius: 12px; padding: 1.25rem; }
+.rec-section-title { font-size: .7rem; text-transform: uppercase; letter-spacing: .1em; color: #8b949e; font-weight: 600; margin-bottom: .75rem; }
+.rec-row { display: flex; align-items: center; gap: .75rem; padding: .55rem .5rem; border-radius: 8px; transition: background .15s; }
+.rec-row:hover { background: var(--bg-card2); }
+.rec-rank { font-size: 1.1rem; font-weight: 800; color: #8b949e; width: 1.4rem; text-align: center; flex-shrink: 0; }
+.rec-rank.gold   { color: #d29922; }
+.rec-rank.silver { color: #c0c0c0; }
+.rec-rank.bronze { color: #cd7f32; }
+.rec-name { flex: 1; min-width: 0; }
+.rec-signal { font-size: .65rem; font-weight: 700; padding: 2px 7px; border-radius: 20px; flex-shrink: 0; }
+.sig-strong-buy { background: #1a3d1a; color: #3fb950; border: 1px solid #3fb95055; }
+.sig-buy        { background: #0d2b1a; color: #00c08b; border: 1px solid #00c08b55; }
+.sig-hold       { background: #1f2d3d; color: #79c0ff; border: 1px solid #79c0ff55; }
+.sig-caution    { background: #3d1a1a; color: #f85149; border: 1px solid #f8514955; }
+.sig-watch      { background: #2d2d1a; color: #d29922; border: 1px solid #d2992255; }
+.rec-pct { font-size: .9rem; font-weight: 700; width: 4.5rem; text-align: right; flex-shrink: 0; }
+.rec-sub { font-size: .65rem; color: #8b949e; }
 table th { color: #ffffff; font-weight: 500; font-size:.8rem; text-transform: uppercase; letter-spacing:.04em; }
 table td { color: #ffffff; vertical-align: middle; }
 h6 { color: #ffffff; }
@@ -182,6 +199,86 @@ h6 { color: #ffffff; }
     </div>
     {% endfor %}
   </div>
+
+  <!-- ML Recommendations -->
+  {% set recs = recommendations if recommendations is defined else {} %}
+  {% set daily5   = recs.get('daily_top5',   []) %}
+  {% set monthly5 = recs.get('monthly_top5', []) %}
+  {% if daily5 or monthly5 %}
+  <div class="row g-3 mb-4">
+    <!-- 1-Day Top 5 -->
+    <div class="col-md-6">
+      <div class="rec-section h-100">
+        <div class="d-flex align-items-center justify-content-between mb-2">
+          <div>
+            <div class="rec-section-title"><i class="bi bi-lightning-charge-fill me-1" style="color:#d29922"></i>Today's Top 5 — 24hr Buy Signal</div>
+            <div style="font-size:.75rem;color:#8b949e;">Ranked by ML 24hr price target + 7-day momentum</div>
+          </div>
+        </div>
+        {% for c in daily5 %}
+        {% set rank_cls = 'gold' if c.rank == 1 else ('silver' if c.rank == 2 else ('bronze' if c.rank == 3 else '')) %}
+        {% set sig_cls  = 'sig-strong-buy' if c.signal == 'Strong Buy' else ('sig-buy' if c.signal == 'Buy' else ('sig-hold' if c.signal == 'Hold' else ('sig-caution' if c.signal == 'Caution' else 'sig-watch'))) %}
+        <div class="rec-row">
+          <div class="rec-rank {{ rank_cls }}">#{{ c.rank }}</div>
+          <div class="rec-name">
+            <span class="badge badge-{{ c.symbol.lower() }} me-1">{{ c.symbol }}</span>
+            <span class="fw-semibold" style="font-size:.85rem;color:#fff">{{ c.name }}</span>
+            <div class="rec-sub">
+              Current ${{ '{:,.2f}'.format(c.current_price) }}
+              &nbsp;·&nbsp;
+              {% if c.pred_1d_price %}Target ${{ '{:,.2f}'.format(c.pred_1d_price) }}{% endif %}
+              &nbsp;·&nbsp;
+              7d momentum {{ '+' if c.momentum_7d >= 0 else '' }}{{ '%.1f'|format(c.momentum_7d) }}%
+            </div>
+          </div>
+          <span class="rec-signal {{ sig_cls }}">{{ c.signal }}</span>
+          <div class="rec-pct {{ 'positive' if c.pred_1d_pct >= 0 else 'negative' }}">
+            {{ '+' if c.pred_1d_pct >= 0 else '' }}{{ '%.2f'|format(c.pred_1d_pct) }}%
+          </div>
+        </div>
+        {% else %}
+        <div class="text-muted small p-2">No predictions available yet — models are training.</div>
+        {% endfor %}
+      </div>
+    </div>
+
+    <!-- 1-Month Top 5 -->
+    <div class="col-md-6">
+      <div class="rec-section h-100">
+        <div class="d-flex align-items-center justify-content-between mb-2">
+          <div>
+            <div class="rec-section-title"><i class="bi bi-graph-up-arrow me-1" style="color:#79c0ff"></i>Long-Term Top 5 — 1-Month Hold</div>
+            <div style="font-size:.75rem;color:#8b949e;">7-day ML trend extrapolated × 4.3 + 30-day momentum</div>
+          </div>
+        </div>
+        {% for c in monthly5 %}
+        {% set rank_cls = 'gold' if c.rank == 1 else ('silver' if c.rank == 2 else ('bronze' if c.rank == 3 else '')) %}
+        {% set sig_cls  = 'sig-strong-buy' if c.signal == 'Strong Buy' else ('sig-buy' if c.signal == 'Buy' else ('sig-hold' if c.signal == 'Hold' else ('sig-caution' if c.signal == 'Caution' else 'sig-watch'))) %}
+        <div class="rec-row">
+          <div class="rec-rank {{ rank_cls }}">#{{ c.rank }}</div>
+          <div class="rec-name">
+            <span class="badge badge-{{ c.symbol.lower() }} me-1">{{ c.symbol }}</span>
+            <span class="fw-semibold" style="font-size:.85rem;color:#fff">{{ c.name }}</span>
+            <div class="rec-sub">
+              7d target {{ '+' if c.pred_7d_pct >= 0 else '' }}{{ '%.1f'|format(c.pred_7d_pct) }}%
+              &nbsp;·&nbsp;
+              ~30d projection {{ '+' if c.monthly_pct >= 0 else '' }}{{ '%.1f'|format(c.monthly_pct) }}%
+              &nbsp;·&nbsp;
+              30d momentum {{ '+' if c.momentum_30d >= 0 else '' }}{{ '%.1f'|format(c.momentum_30d) }}%
+            </div>
+          </div>
+          <span class="rec-signal {{ sig_cls }}">{{ c.signal }}</span>
+          <div class="rec-pct {{ 'positive' if c.monthly_pct >= 0 else 'negative' }}">
+            {{ '+' if c.monthly_pct >= 0 else '' }}{{ '%.1f'|format(c.monthly_pct) }}%
+          </div>
+        </div>
+        {% else %}
+        <div class="text-muted small p-2">No predictions available yet — models are training.</div>
+        {% endfor %}
+      </div>
+    </div>
+  </div>
+  {% endif %}
 
   <!-- Main tab navigation -->
   <ul class="nav tab-nav mb-3">

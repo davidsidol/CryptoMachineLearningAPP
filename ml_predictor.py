@@ -434,6 +434,91 @@ def get_accuracy_summary() -> dict:
     return summary
 
 
+def get_recommendations() -> dict:
+    """
+    Rank tracked coins for:
+      - daily_top5:   best 24-hour buys (1d ML prediction + 7d momentum)
+      - monthly_top5: best 1-month holds (7d ML prediction extrapolated × 4.3 + 30d momentum)
+
+    Returns {daily_top5: [...], monthly_top5: [...], generated_at: str}
+    """
+    preds = get_prediction_summary()
+
+    candidates = []
+    for sym, info in CRYPTO_ASSETS.items():
+        try:
+            hist = db.get_price_history(sym, days=45)
+            if hist.empty or len(hist) < 10:
+                continue
+
+            hist = hist.sort_values("timestamp").copy()
+            hist["price"] = hist["price_usd"].ffill()
+
+            current_price = float(hist["price"].iloc[-1])
+            if current_price <= 0:
+                continue
+
+            p7  = float(hist["price"].iloc[-8])  if len(hist) >= 8  else float(hist["price"].iloc[0])
+            p30 = float(hist["price"].iloc[-31]) if len(hist) >= 31 else float(hist["price"].iloc[0])
+            momentum_7d  = ((current_price / p7)  - 1) * 100 if p7  > 0 else 0.0
+            momentum_30d = ((current_price / p30) - 1) * 100 if p30 > 0 else 0.0
+
+            pred_1d_val = preds.get(sym, {}).get("1", {}).get("price_usd", {}).get("value")
+            pred_7d_val = preds.get(sym, {}).get("7", {}).get("price_usd", {}).get("value")
+
+            pred_1d_pct = ((pred_1d_val / current_price) - 1) * 100 if pred_1d_val else None
+            pred_7d_pct = ((pred_7d_val / current_price) - 1) * 100 if pred_7d_val else None
+            monthly_pct = pred_7d_pct * 4.3 if pred_7d_pct is not None else None
+
+            # Composite scores
+            daily_score   = 0.7 * pred_1d_pct  + 0.3 * momentum_7d  if pred_1d_pct  is not None else None
+            monthly_score = 0.6 * monthly_pct  + 0.4 * momentum_30d if monthly_pct  is not None else None
+
+            candidates.append({
+                "symbol": sym,
+                "name": info["name"],
+                "color": info["color"],
+                "current_price": round(current_price, 2),
+                "pred_1d_price":  round(pred_1d_val, 2) if pred_1d_val else None,
+                "pred_7d_price":  round(pred_7d_val, 2) if pred_7d_val else None,
+                "pred_1d_pct":    round(pred_1d_pct,  2) if pred_1d_pct  is not None else None,
+                "pred_7d_pct":    round(pred_7d_pct,  2) if pred_7d_pct  is not None else None,
+                "monthly_pct":    round(monthly_pct,  2) if monthly_pct  is not None else None,
+                "momentum_7d":    round(momentum_7d,  2),
+                "momentum_30d":   round(momentum_30d, 2),
+                "daily_score":    daily_score,
+                "monthly_score":  monthly_score,
+            })
+        except Exception as e:
+            print(f"[RECS] Error scoring {sym}: {e}")
+
+    def _signal(pct):
+        if pct is None:   return "Watch"
+        if pct >= 5:      return "Strong Buy"
+        if pct >= 2:      return "Buy"
+        if pct >= 0:      return "Hold"
+        return "Caution"
+
+    daily   = sorted([c for c in candidates if c["daily_score"]   is not None],
+                     key=lambda x: x["daily_score"],   reverse=True)
+    monthly = sorted([c for c in candidates if c["monthly_score"] is not None],
+                     key=lambda x: x["monthly_score"], reverse=True)
+
+    for i, c in enumerate(daily[:5]):
+        c["rank"]   = i + 1
+        c["signal"] = _signal(c["pred_1d_pct"])
+
+    for i, c in enumerate(monthly[:5]):
+        c["rank"]   = i + 1
+        c["signal"] = _signal(c["monthly_pct"])
+
+    return {
+        "daily_top5":   daily[:5],
+        "monthly_top5": monthly[:5],
+        "generated_at": datetime.utcnow().isoformat(),
+    }
+
+
 def get_feature_importance(symbol: str, target: str, horizon: int) -> dict:
     """Return top-20 feature importances for a model."""
     meta = _load_model(symbol, target, horizon)

@@ -83,12 +83,19 @@ def index():
         print(f"[APP] Error fetching accuracy: {e}")
         accuracy = {}
 
+    try:
+        recommendations = ml.get_recommendations()
+    except Exception as e:
+        print(f"[APP] Error fetching recommendations: {e}")
+        recommendations = {"daily_top5": [], "monthly_top5": [], "generated_at": ""}
+
     return render_template(
         "index.html",
         assets=CRYPTO_ASSETS,
         prices=prices,
         predictions=predictions,
         accuracy=accuracy,
+        recommendations=recommendations,
         horizons=PREDICTION_HORIZONS,
         last_refresh=_last_refresh,
     )
@@ -134,6 +141,15 @@ def api_ohlcv(symbol):
             "symbol": symbol,
             "data": df.to_dict("records"),
         })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/recommendations")
+def api_recommendations():
+    """Return ML-ranked buy and hold recommendations."""
+    try:
+        return jsonify(ml.get_recommendations())
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
