@@ -436,13 +436,30 @@ def get_accuracy_summary() -> dict:
 
 def get_recommendations() -> dict:
     """
-    Rank tracked coins for:
-      - daily_top5:   best 24-hour buys (1d ML prediction + 7d momentum)
-      - monthly_top5: best 1-month holds (7d ML prediction extrapolated × 4.3 + 30d momentum)
+    Rank tracked coins for three panels.  Every composite score is multiplied by
+    an accuracy weight derived from the model's own historical hit/miss record in
+    prediction_outcomes, so models that have been right more often earn a higher
+    position and models that have been consistently wrong are discounted.
 
-    Returns {daily_top5: [...], monthly_top5: [...], generated_at: str}
+    accuracy_weight formula (requires ≥5 evaluated outcomes):
+        weight = 0.5 + (directional_accuracy_pct / 100)
+        → 50 % accuracy  → weight 1.0  (neutral, no boost or penalty)
+        → 70 % accuracy  → weight 1.2
+        → 30 % accuracy  → weight 0.8
+    Below 5 samples the weight stays 1.0 (not enough history to judge).
     """
-    preds = get_prediction_summary()
+    preds    = get_prediction_summary()
+    accuracy = get_accuracy_summary()   # { sym -> { horizon_str -> { target -> {...} } } }
+
+    def _acc_weight(sym: str, horizon_str: str, min_samples: int = 5) -> tuple:
+        """Return (weight, directional_accuracy_pct, sample_count) for price_usd model."""
+        stats = accuracy.get(sym, {}).get(horizon_str, {}).get("price_usd", {})
+        n     = stats.get("sample_count", 0)
+        da    = stats.get("directional_accuracy", 50.0)
+        if n < min_samples:
+            return 1.0, None, n
+        weight = 0.5 + (da / 100.0)   # 50 % → 1.0, 70 % → 1.2, 30 % → 0.8
+        return weight, da, n
 
     candidates = []
     for sym, info in CRYPTO_ASSETS.items():
@@ -470,18 +487,23 @@ def get_recommendations() -> dict:
             pred_7d_pct = ((pred_7d_val / current_price) - 1) * 100 if pred_7d_val else None
             monthly_pct = pred_7d_pct * 4.3 if pred_7d_pct is not None else None
 
-            # Composite scores
-            daily_score   = 0.7 * pred_1d_pct  + 0.3 * momentum_7d  if pred_1d_pct  is not None else None
-            monthly_score = 0.6 * monthly_pct  + 0.4 * momentum_30d if monthly_pct  is not None else None
+            # Accuracy weights from historical outcomes
+            w1d, da_1d, n1d = _acc_weight(sym, "1")
+            w7d, da_7d, n7d = _acc_weight(sym, "7")
 
-            # Weekly: rank by absolute size of 7d move; boost when momentum agrees
+            # Composite scores — prediction + momentum, scaled by accuracy weight
+            daily_score   = (0.7 * pred_1d_pct  + 0.3 * momentum_7d)  * w1d if pred_1d_pct  is not None else None
+            monthly_score = (0.6 * monthly_pct  + 0.4 * momentum_30d) * w7d if monthly_pct  is not None else None
+
+            # Weekly: magnitude of 7d move, boosted when momentum agrees, scaled by accuracy
             if pred_7d_pct is not None:
                 momentum_agrees = (pred_7d_pct > 0) == (momentum_7d > 0)
-                weekly_score = abs(pred_7d_pct) * (1.15 if momentum_agrees else 0.85)
+                weekly_score = abs(pred_7d_pct) * (1.15 if momentum_agrees else 0.85) * w7d
                 weekly_direction = "LONG" if pred_7d_pct >= 0 else "SHORT"
             else:
-                weekly_score = None
+                weekly_score    = None
                 weekly_direction = None
+                momentum_agrees  = False
 
             candidates.append({
                 "symbol": sym,
@@ -499,16 +521,37 @@ def get_recommendations() -> dict:
                 "monthly_score":  monthly_score,
                 "weekly_score":   weekly_score,
                 "weekly_direction": weekly_direction,
+                "momentum_agrees":  momentum_agrees,
+                # Accuracy metadata shown in UI
+                "acc_1d_pct":  round(da_1d, 1) if da_1d is not None else None,
+                "acc_7d_pct":  round(da_7d, 1) if da_7d is not None else None,
+                "acc_1d_n":    n1d,
+                "acc_7d_n":    n7d,
             })
         except Exception as e:
             print(f"[RECS] Error scoring {sym}: {e}")
 
     def _signal(pct):
-        if pct is None:   return "Watch"
-        if pct >= 5:      return "Strong Buy"
-        if pct >= 2:      return "Buy"
-        if pct >= 0:      return "Hold"
+        if pct is None:  return "Watch"
+        if pct >= 5:     return "Strong Buy"
+        if pct >= 2:     return "Buy"
+        if pct >= 0:     return "Hold"
         return "Caution"
+
+    def _confidence(c):
+        """Derive weekly confidence from accuracy history + momentum agreement."""
+        da    = c.get("acc_7d_pct")
+        n     = c.get("acc_7d_n", 0)
+        agrees = c.get("momentum_agrees", False)
+        move  = abs(c.get("pred_7d_pct") or 0)
+        # If we have enough history, let accuracy dominate
+        if n >= 5 and da is not None:
+            if da >= 65 and agrees and move >= 3:  return "High"
+            if da >= 55 and agrees:                return "Medium"
+            if da < 50:                            return "Low"
+            return "Medium"
+        # Fall back to momentum-only signal while history builds
+        return "High" if agrees and move >= 3 else "Medium" if agrees else "Low"
 
     daily   = sorted([c for c in candidates if c["daily_score"]   is not None],
                      key=lambda x: x["daily_score"],   reverse=True)
@@ -526,11 +569,8 @@ def get_recommendations() -> dict:
         c["signal"] = _signal(c["monthly_pct"])
 
     for i, c in enumerate(weekly[:5]):
-        c["rank"] = i + 1
-        # Confidence label based on momentum agreement
-        momentum_agrees = (c["pred_7d_pct"] > 0) == (c["momentum_7d"] > 0)
-        c["confidence"] = "High" if momentum_agrees and abs(c["pred_7d_pct"]) >= 3 else \
-                          "Medium" if momentum_agrees else "Low"
+        c["rank"]       = i + 1
+        c["confidence"] = _confidence(c)
 
     return {
         "daily_top5":   daily[:5],

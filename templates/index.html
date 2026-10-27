@@ -234,10 +234,9 @@ h6 { color: #ffffff; }
             <span class="fw-semibold" style="font-size:.85rem;color:#fff">{{ c.name }}</span>
             <div class="rec-sub">
               Current ${{ '{:,.2f}'.format(c.current_price) }}
-              &nbsp;·&nbsp;
-              {% if c.pred_1d_price %}Target ${{ '{:,.2f}'.format(c.pred_1d_price) }}{% endif %}
-              &nbsp;·&nbsp;
-              7d momentum {{ '+' if c.momentum_7d >= 0 else '' }}{{ '%.1f'|format(c.momentum_7d) }}%
+              {% if c.pred_1d_price %}&nbsp;·&nbsp;Target ${{ '{:,.2f}'.format(c.pred_1d_price) }}{% endif %}
+              &nbsp;·&nbsp;7d mom {{ '+' if c.momentum_7d >= 0 else '' }}{{ '%.1f'|format(c.momentum_7d) }}%
+              {% if c.acc_1d_pct is not none %}&nbsp;·&nbsp;<span style="color:#d29922">Model: {{ c.acc_1d_pct }}% dir ({{ c.acc_1d_n }} trades)</span>{% else %}&nbsp;·&nbsp;<span style="color:#555">Model: building history…</span>{% endif %}
             </div>
           </div>
           <span class="rec-signal {{ sig_cls }}">{{ c.signal }}</span>
@@ -270,10 +269,9 @@ h6 { color: #ffffff; }
             <span class="fw-semibold" style="font-size:.85rem;color:#fff">{{ c.name }}</span>
             <div class="rec-sub">
               7d target {{ '+' if c.pred_7d_pct >= 0 else '' }}{{ '%.1f'|format(c.pred_7d_pct) }}%
-              &nbsp;·&nbsp;
-              ~30d projection {{ '+' if c.monthly_pct >= 0 else '' }}{{ '%.1f'|format(c.monthly_pct) }}%
-              &nbsp;·&nbsp;
-              30d momentum {{ '+' if c.momentum_30d >= 0 else '' }}{{ '%.1f'|format(c.momentum_30d) }}%
+              &nbsp;·&nbsp;~30d proj {{ '+' if c.monthly_pct >= 0 else '' }}{{ '%.1f'|format(c.monthly_pct) }}%
+              &nbsp;·&nbsp;30d mom {{ '+' if c.momentum_30d >= 0 else '' }}{{ '%.1f'|format(c.momentum_30d) }}%
+              {% if c.acc_7d_pct is not none %}&nbsp;·&nbsp;<span style="color:#d29922">Model: {{ c.acc_7d_pct }}% dir ({{ c.acc_7d_n }} trades)</span>{% else %}&nbsp;·&nbsp;<span style="color:#555">Model: building history…</span>{% endif %}
             </div>
           </div>
           <span class="rec-signal {{ sig_cls }}">{{ c.signal }}</span>
@@ -309,6 +307,7 @@ h6 { color: #ffffff; }
           <div style="width:5rem;text-align:right">Change</div>
           <div style="width:4rem;text-align:center">Confidence</div>
           <div style="width:3.5rem;text-align:right">7d Trend</div>
+          <div style="width:6rem;text-align:right">Model Accuracy</div>
         </div>
         {% for c in weekly5 %}
         {% set rank_cls = 'gold' if c.rank == 1 else ('silver' if c.rank == 2 else ('bronze' if c.rank == 3 else '')) %}
@@ -342,6 +341,14 @@ h6 { color: #ffffff; }
           </div>
           <div class="rec-sub" style="width:3.5rem;text-align:right">
             <span class="{{ 'positive' if c.momentum_7d >= 0 else 'negative' }}">{{ '+' if c.momentum_7d >= 0 else '' }}{{ '%.1f'|format(c.momentum_7d) }}%</span>
+          </div>
+          <div class="rec-sub" style="width:6rem;text-align:right">
+            {% if c.acc_7d_pct is not none %}
+              <span style="color:{{ '#3fb950' if c.acc_7d_pct >= 60 else ('#d29922' if c.acc_7d_pct >= 50 else '#f85149') }}">{{ c.acc_7d_pct }}%</span>
+              <span style="color:#555">({{ c.acc_7d_n }})</span>
+            {% else %}
+              <span style="color:#555">–</span>
+            {% endif %}
           </div>
         </div>
         {% endfor %}
