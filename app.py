@@ -87,7 +87,7 @@ def index():
         recommendations = ml.get_recommendations()
     except Exception as e:
         print(f"[APP] Error fetching recommendations: {e}")
-        recommendations = {"daily_top5": [], "monthly_top5": [], "generated_at": ""}
+        recommendations = {"daily_top5": [], "monthly_top5": [], "weekly_top5": [], "generated_at": ""}
 
     return render_template(
         "index.html",

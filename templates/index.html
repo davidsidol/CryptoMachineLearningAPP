@@ -81,6 +81,15 @@ body { background: var(--bg-dark); color: var(--text); font-family: 'Segoe UI', 
 .sig-watch      { background: #2d2d1a; color: #d29922; border: 1px solid #d2992255; }
 .rec-pct { font-size: .9rem; font-weight: 700; width: 4.5rem; text-align: right; flex-shrink: 0; }
 .rec-sub { font-size: .65rem; color: #8b949e; }
+.long-badge  { background: #0d2b1a; color: #3fb950; border: 1px solid #3fb95055; font-size:.7rem; font-weight:700; padding:2px 8px; border-radius:4px; }
+.short-badge { background: #3d1a1a; color: #f85149; border: 1px solid #f8514955; font-size:.7rem; font-weight:700; padding:2px 8px; border-radius:4px; }
+.conf-high   { font-size:.6rem; color:#3fb950; }
+.conf-medium { font-size:.6rem; color:#d29922; }
+.conf-low    { font-size:.6rem; color:#8b949e; }
+.weekly-target { font-size:.85rem; font-weight:700; }
+.weekly-row { display:flex; align-items:center; gap:.75rem; padding:.6rem .75rem; border-radius:8px; transition:background .15s; border-bottom:1px solid var(--border); }
+.weekly-row:last-child { border-bottom:none; }
+.weekly-row:hover { background:var(--bg-card2); }
 table th { color: #ffffff; font-weight: 500; font-size:.8rem; text-transform: uppercase; letter-spacing:.04em; }
 table td { color: #ffffff; vertical-align: middle; }
 h6 { color: #ffffff; }
@@ -278,6 +287,69 @@ h6 { color: #ffffff; }
       </div>
     </div>
   </div>
+  <!-- Weekly Longs / Shorts -->
+  {% set weekly5 = recs.get('weekly_top5', []) %}
+  {% if weekly5 %}
+  <div class="row g-3 mb-4">
+    <div class="col-12">
+      <div class="rec-section">
+        <div class="d-flex align-items-center justify-content-between mb-3">
+          <div>
+            <div class="rec-section-title"><i class="bi bi-calendar-week-fill me-1" style="color:#d29922"></i>Weekly Trade Ideas — Top 5 Longs &amp; Shorts</div>
+            <div style="font-size:.75rem;color:#8b949e;">Ranked by predicted 7-day price move magnitude · LONG = bullish target · SHORT = bearish target</div>
+          </div>
+        </div>
+        <!-- Header row -->
+        <div class="d-none d-md-flex align-items-center gap-2 px-2 pb-1 mb-1" style="font-size:.65rem;text-transform:uppercase;letter-spacing:.07em;color:#8b949e;border-bottom:1px solid var(--border);">
+          <div style="width:1.4rem"></div>
+          <div style="flex:1">Asset</div>
+          <div style="width:5rem;text-align:center">Direction</div>
+          <div style="width:7rem;text-align:right">Entry (now)</div>
+          <div style="width:7rem;text-align:right">7-Day Target</div>
+          <div style="width:5rem;text-align:right">Change</div>
+          <div style="width:4rem;text-align:center">Confidence</div>
+          <div style="width:3.5rem;text-align:right">7d Trend</div>
+        </div>
+        {% for c in weekly5 %}
+        {% set rank_cls = 'gold' if c.rank == 1 else ('silver' if c.rank == 2 else ('bronze' if c.rank == 3 else '')) %}
+        {% set is_long = c.weekly_direction == 'LONG' %}
+        <div class="weekly-row">
+          <div class="rec-rank {{ rank_cls }}">#{{ c.rank }}</div>
+          <div style="flex:1;min-width:0;">
+            <span class="badge badge-{{ c.symbol.lower() }} me-1">{{ c.symbol }}</span>
+            <span class="fw-semibold" style="font-size:.85rem;color:#fff">{{ c.name }}</span>
+          </div>
+          <div style="width:5rem;text-align:center">
+            {% if is_long %}
+              <span class="long-badge"><i class="bi bi-arrow-up-short"></i>LONG</span>
+            {% else %}
+              <span class="short-badge"><i class="bi bi-arrow-down-short"></i>SHORT</span>
+            {% endif %}
+          </div>
+          <div class="weekly-target text-white" style="width:7rem;text-align:right">
+            ${{ '{:,.2f}'.format(c.current_price) }}
+          </div>
+          <div class="weekly-target {{ 'positive' if is_long else 'negative' }}" style="width:7rem;text-align:right">
+            {% if c.pred_7d_price %}${{ '{:,.2f}'.format(c.pred_7d_price) }}{% else %}–{% endif %}
+          </div>
+          <div class="weekly-target {{ 'positive' if c.pred_7d_pct >= 0 else 'negative' }}" style="width:5rem;text-align:right">
+            {{ '+' if c.pred_7d_pct >= 0 else '' }}{{ '%.2f'|format(c.pred_7d_pct) }}%
+          </div>
+          <div style="width:4rem;text-align:center">
+            <span class="conf-{{ c.confidence.lower() }}">
+              <i class="bi bi-circle-fill me-1" style="font-size:.4rem;vertical-align:middle"></i>{{ c.confidence }}
+            </span>
+          </div>
+          <div class="rec-sub" style="width:3.5rem;text-align:right">
+            <span class="{{ 'positive' if c.momentum_7d >= 0 else 'negative' }}">{{ '+' if c.momentum_7d >= 0 else '' }}{{ '%.1f'|format(c.momentum_7d) }}%</span>
+          </div>
+        </div>
+        {% endfor %}
+      </div>
+    </div>
+  </div>
+  {% endif %}
+
   {% endif %}
 
   <!-- Main tab navigation -->

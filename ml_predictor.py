@@ -474,6 +474,15 @@ def get_recommendations() -> dict:
             daily_score   = 0.7 * pred_1d_pct  + 0.3 * momentum_7d  if pred_1d_pct  is not None else None
             monthly_score = 0.6 * monthly_pct  + 0.4 * momentum_30d if monthly_pct  is not None else None
 
+            # Weekly: rank by absolute size of 7d move; boost when momentum agrees
+            if pred_7d_pct is not None:
+                momentum_agrees = (pred_7d_pct > 0) == (momentum_7d > 0)
+                weekly_score = abs(pred_7d_pct) * (1.15 if momentum_agrees else 0.85)
+                weekly_direction = "LONG" if pred_7d_pct >= 0 else "SHORT"
+            else:
+                weekly_score = None
+                weekly_direction = None
+
             candidates.append({
                 "symbol": sym,
                 "name": info["name"],
@@ -488,6 +497,8 @@ def get_recommendations() -> dict:
                 "momentum_30d":   round(momentum_30d, 2),
                 "daily_score":    daily_score,
                 "monthly_score":  monthly_score,
+                "weekly_score":   weekly_score,
+                "weekly_direction": weekly_direction,
             })
         except Exception as e:
             print(f"[RECS] Error scoring {sym}: {e}")
@@ -503,6 +514,8 @@ def get_recommendations() -> dict:
                      key=lambda x: x["daily_score"],   reverse=True)
     monthly = sorted([c for c in candidates if c["monthly_score"] is not None],
                      key=lambda x: x["monthly_score"], reverse=True)
+    weekly  = sorted([c for c in candidates if c["weekly_score"]  is not None],
+                     key=lambda x: x["weekly_score"],  reverse=True)
 
     for i, c in enumerate(daily[:5]):
         c["rank"]   = i + 1
@@ -512,9 +525,17 @@ def get_recommendations() -> dict:
         c["rank"]   = i + 1
         c["signal"] = _signal(c["monthly_pct"])
 
+    for i, c in enumerate(weekly[:5]):
+        c["rank"] = i + 1
+        # Confidence label based on momentum agreement
+        momentum_agrees = (c["pred_7d_pct"] > 0) == (c["momentum_7d"] > 0)
+        c["confidence"] = "High" if momentum_agrees and abs(c["pred_7d_pct"]) >= 3 else \
+                          "Medium" if momentum_agrees else "Low"
+
     return {
         "daily_top5":   daily[:5],
         "monthly_top5": monthly[:5],
+        "weekly_top5":  weekly[:5],
         "generated_at": datetime.utcnow().isoformat(),
     }
 
