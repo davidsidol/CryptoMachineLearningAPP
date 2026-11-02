@@ -37,6 +37,8 @@ CRYPTO_ASSETS = {
     "AVAX": {"name": "Avalanche",  "cmc_id": 5805,  "coinbase_id": "AVAX-USD", "color": "#E84142"},
     "NEAR": {"name": "NEAR",       "cmc_id": 6535,  "coinbase_id": "NEAR-USD", "color": "#00C08B"},
     "LINK": {"name": "Chainlink",  "cmc_id": 1975,  "coinbase_id": "LINK-USD", "color": "#2A5ADA"},
+    "HYPE": {"name": "Hyperliquid","cmc_id": 32196, "coinbase_id": None,        "color": "#97FCE4"},
+    "XMR":  {"name": "Monero",     "cmc_id": 328,   "coinbase_id": None,        "color": "#FF6600"},
 }
 
 # ML Configuration

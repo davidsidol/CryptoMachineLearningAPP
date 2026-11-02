@@ -172,12 +172,16 @@ def train_model(symbol: str, target: str, horizon: int) -> dict:
     return metrics
 
 
-def train_all():
-    """Train all models for all symbols, targets, and horizons."""
+def train_all(only_missing: bool = False):
+    """Train all models for all symbols, targets, and horizons.
+    only_missing=True skips models whose .pkl file already exists."""
     results = []
     for symbol in CRYPTO_ASSETS:
         for target in TARGETS:
             for horizon in PREDICTION_HORIZONS:
+                if only_missing and os.path.exists(
+                        os.path.join(MODEL_DIR, f"{symbol}_{target}_{horizon}d.pkl")):
+                    continue
                 try:
                     m = train_model(symbol, target, horizon)
                     if m:

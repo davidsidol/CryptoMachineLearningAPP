@@ -238,6 +238,8 @@ COINGECKO_IDS = {
     "AVAX": "avalanche-2",
     "NEAR": "near",
     "LINK": "chainlink",
+    "HYPE": "hyperliquid",
+    "XMR":  "monero",
 }
 COINGECKO_URL = "https://api.coingecko.com/api/v3"
 
@@ -300,6 +302,18 @@ def enrich_market_cap_from_coingecko():
     for symbol in CRYPTO_ASSETS:
         fetch_coingecko_history(symbol, days=365)
         time.sleep(1.5)  # CoinGecko rate limit: ~10-30 req/min
+
+
+def bootstrap_symbols(symbols, days: int = 365):
+    """Seed history only for the given (newly added) symbols."""
+    for symbol in symbols:
+        print(f"\n--- Bootstrapping {symbol} ---")
+        fetch_historical_quotes(symbol, days=days)
+        time.sleep(1)
+        fetch_coinbase_candles(symbol, days=min(days, 300))
+        sync_ohlcv_to_prices(symbol)
+        fetch_coingecko_history(symbol, days=days)
+        time.sleep(1.5)
 
 
 def bootstrap_all(days: int = 365):

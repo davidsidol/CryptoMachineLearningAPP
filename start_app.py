@@ -26,13 +26,12 @@ def _run_startup():
         db.setup_database()
 
         # 2. Data
-        needs_bootstrap = any(db.get_row_count(s) < 30 for s in CRYPTO_ASSETS)
-        if needs_bootstrap:
-            startup_state["stage"] = "Bootstrapping 365 days of historical data…"
-            dc.bootstrap_all(days=365)
-        else:
-            startup_state["stage"] = "Refreshing latest market data…"
-            dc.refresh_all()
+        new_syms = [s for s in CRYPTO_ASSETS if db.get_row_count(s) < 30]
+        if new_syms:
+            startup_state["stage"] = f"Bootstrapping 365 days of history for {', '.join(new_syms)}…"
+            dc.bootstrap_symbols(new_syms, days=365)
+        startup_state["stage"] = "Refreshing latest market data…"
+        dc.refresh_all()
 
         # 3. Check whether saved models exist — skip training if all 27 present
         model_dir = ml.MODEL_DIR
@@ -45,8 +44,8 @@ def _run_startup():
         missing = [f for f in expected if not os.path.exists(os.path.join(model_dir, f))]
 
         if missing:
-            startup_state["stage"] = f"Training ML models (0 / {len(expected)})…"
-            ml.train_all()
+            startup_state["stage"] = f"Training {len(missing)} missing ML models…"
+            ml.train_all(only_missing=True)
         else:
             startup_state["stage"] = "ML models already trained — skipping retrain…"
             time.sleep(1)
