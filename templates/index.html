@@ -157,6 +157,24 @@ body { font-family: 'Inter', 'Segoe UI', system-ui, sans-serif; position: relati
 .tab-nav .nav-link img { width: 18px; height: 18px; border-radius: 50%; margin-right: 6px; vertical-align: -3px; }
 .tab-nav .nav-link.active { background: var(--glass-2); border: 1px solid var(--glass-border); }
 @media (prefers-reduced-motion: reduce) { .coin-card { transition: none; } .coin-card:hover { transform: none; } }
+
+/* Fear & Greed gauge */
+.hero { display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; gap: 1.5rem; }
+.hero-center { grid-column: 2; }
+.hero-right { grid-column: 3; justify-self: start; }
+.fng-card { display: flex; align-items: center; gap: 1rem; padding: .8rem 1.1rem; text-align: left; min-width: 290px;
+  background: var(--glass); border: 1px solid var(--glass-border); border-radius: 16px; backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px); }
+.fng-title { font-size: .62rem; letter-spacing: .14em; text-transform: uppercase; color: #94a3b8; font-weight: 600; }
+.fng-label { font-family: 'Space Grotesk', sans-serif; font-weight: 700; font-size: 1.05rem; line-height: 1.1; }
+.fng-hist { display: flex; gap: .35rem; margin-top: .4rem; flex-wrap: wrap; }
+.fng-chip { font-size: .64rem; padding: 2px 7px; border-radius: 999px; background: rgba(255,255,255,.05); border: 1px solid rgba(255,255,255,.08); color: #cbd5e1; white-space: nowrap; }
+.fng-chip b { font-weight: 700; }
+@media (max-width: 1199.98px) {
+  .hero { grid-template-columns: 1fr; gap: 1rem; }
+  .hero-center, .hero-right { grid-column: 1; justify-self: center; }
+}
+.bt-line { font-size: .64rem; color: #94a3b8; margin-top: .55rem; text-align: center; }
+.bt-good { color: #4ade80; } .bt-bad { color: #f87171; } .bt-mid { color: #facc15; }
 </style>
 </head>
 <body>
@@ -183,10 +201,59 @@ body { font-family: 'Inter', 'Segoe UI', system-ui, sans-serif; position: relati
   </div>
 </nav>
 
+{% macro fng_color(v) -%}
+{{ '#ef4444' if v < 25 else ('#f97316' if v < 45 else ('#eab308' if v <= 55 else ('#84cc16' if v <= 75 else '#22c55e'))) }}
+{%- endmacro %}
 <header class="hero">
-  <h1 class="hero-title"><span class="idol">Idol</span> Crypto ML Forecast</h1>
-  <div class="hero-sub">Machine-learning price forecasts · {{ assets|length }} chains</div>
-  <div class="hero-line"></div>
+  <div class="hero-center">
+    <h1 class="hero-title"><span class="idol">Idol</span> Crypto ML Forecast</h1>
+    <div class="hero-sub">Machine-learning price forecasts · {{ assets|length }} chains</div>
+    <div class="hero-line"></div>
+  </div>
+  <div class="hero-right">
+    {% set fg = fear_greed if fear_greed is defined else {} %}
+    <div class="fng-card" title="Crypto Fear & Greed Index (alternative.me){% if fg.get('date') %} · {{ fg.date }}{% endif %}">
+      {% if fg.get('value') is not none %}
+      {% set v = fg.value %}
+      {% set ang = (v * 1.8 - 90) %}
+      <svg width="120" height="72" viewBox="0 0 120 72" role="img" aria-label="Fear and Greed {{ v }} {{ fg.label }}">
+        <defs>
+          <linearGradient id="fngGrad" x1="0" x2="1" y1="0" y2="0">
+            <stop offset="0%"   stop-color="#ef4444"/>
+            <stop offset="30%"  stop-color="#f97316"/>
+            <stop offset="50%"  stop-color="#eab308"/>
+            <stop offset="72%"  stop-color="#84cc16"/>
+            <stop offset="100%" stop-color="#22c55e"/>
+          </linearGradient>
+        </defs>
+        <path d="M10 62 A50 50 0 0 1 110 62" fill="none" stroke="rgba(255,255,255,.08)" stroke-width="10" stroke-linecap="round"/>
+        <path d="M10 62 A50 50 0 0 1 110 62" fill="none" stroke="url(#fngGrad)" stroke-width="10" stroke-linecap="round" opacity=".95"/>
+        <g transform="rotate({{ ang }} 60 62)">
+          <line x1="60" y1="62" x2="60" y2="20" stroke="#fff" stroke-width="2.5" stroke-linecap="round"/>
+        </g>
+        <circle cx="60" cy="62" r="5" fill="#fff"/>
+      </svg>
+      <div>
+        <div class="fng-title">Fear &amp; Greed</div>
+        <div class="d-flex align-items-baseline gap-2">
+          <span style="font-family:'Space Grotesk',sans-serif;font-size:2rem;font-weight:700;color:{{ fng_color(v) }};line-height:1">{{ v }}</span>
+          <span class="fng-label" style="color:{{ fng_color(v) }}">{{ fg.label }}</span>
+        </div>
+        <div class="fng-hist">
+          {% for key, lbl in [('yesterday','1d'), ('week','7d'), ('month','30d')] %}
+            {% set h = fg.get(key) %}
+            {% if h %}<span class="fng-chip">{{ lbl }} <b style="color:{{ fng_color(h.value) }}">{{ h.value }}</b></span>{% endif %}
+          {% endfor %}
+        </div>
+      </div>
+      {% else %}
+      <div>
+        <div class="fng-title">Fear &amp; Greed</div>
+        <div class="fng-label" style="color:#94a3b8">Loading index…</div>
+      </div>
+      {% endif %}
+    </div>
+  </div>
 </header>
 
 <div class="container-fluid px-4 pb-4">
@@ -272,6 +339,14 @@ body { font-family: 'Inter', 'Segoe UI', system-ui, sans-serif; position: relati
           </div></div>
           {% endfor %}
         </div>
+        {% set q = (quality if quality is defined else {}).get(sym, {}).get('7', {}).get('price_usd') %}
+        {% if q %}
+        <div class="bt-line">
+          <i class="bi bi-clipboard-data me-1"></i>7d backtest:
+          <span class="{{ 'bt-good' if q.directional >= 55 else ('bt-mid' if q.directional >= 50 else 'bt-bad') }}">{{ q.directional }}% direction</span>
+          · <span class="{{ 'bt-good' if q.skill > 0 else 'bt-bad' }}">{{ '+' if q.skill > 0 else '' }}{{ q.skill }}% vs no-change</span>
+        </div>
+        {% endif %}
       </div>
     </div>
     {% endfor %}
@@ -492,6 +567,18 @@ body { font-family: 'Inter', 'Segoe UI', system-ui, sans-serif; position: relati
               {{ acc.directional_accuracy }}% directional
             </div>
             <div style="font-size:.65rem; color:#8b949e;">±{{ acc.mean_abs_pct_error }}% avg error</div>
+          </div>
+          {% endif %}
+          {% set q = (quality if quality is defined else {}).get(sym, {}).get(h|string, {}).get('price_usd') %}
+          {% if q %}
+          <div class="mt-2 pt-2" style="border-top:1px solid rgba(148,163,255,.14);">
+            <div style="font-size:.68rem; color:#94a3b8;">Backtest (out-of-sample)</div>
+            <div style="font-size:.78rem; font-weight:600;" class="{{ 'bt-good' if q.directional >= 55 else ('bt-mid' if q.directional >= 50 else 'bt-bad') }}">
+              {{ q.directional }}% directional <span style="color:#64748b;font-weight:400">(up-days {{ q.up_share|round|int }}%)</span>
+            </div>
+            <div style="font-size:.68rem;" class="{{ 'bt-good' if q.skill > 0 else 'bt-bad' }}">
+              Error {{ q.mae_pct }}% vs no-change {{ q.baseline_mae_pct }}% ({{ '+' if q.skill > 0 else '' }}{{ q.skill }}%)
+            </div>
           </div>
           {% endif %}
         </div>

@@ -146,6 +146,24 @@ def setup_database():
             )
         """)
 
+        # v2 model metrics (out-of-sample, vs "no change" baseline)
+        for col, typ in [("baseline_mae", "FLOAT"), ("skill_score", "FLOAT"),
+                         ("directional_acc", "FLOAT"), ("up_share", "FLOAT"),
+                         ("model_version", "INT")]:
+            cursor.execute(f"IF COL_LENGTH('ml_models', '{col}') IS NULL "
+                           f"ALTER TABLE ml_models ADD {col} {typ} NULL")
+
+        # Crypto Fear & Greed Index (alternative.me), one row per day
+        cursor.execute("""
+            IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='fear_greed' AND xtype='U')
+            CREATE TABLE fear_greed (
+                [date]          DATE          NOT NULL PRIMARY KEY,
+                value           INT           NOT NULL,
+                classification  NVARCHAR(30)  NOT NULL,
+                updated_at      DATETIME2     DEFAULT GETUTCDATE()
+            )
+        """)
+
         print("[DB] All tables created/verified.")
 
 
@@ -378,3 +396,31 @@ def get_prediction_accuracy() -> pd.DataFrame:
             ORDER BY symbol, target, horizon_days
         """
         return pd.read_sql(query, conn)
+
+
+# ---------------------------------------------------------------------------
+# Fear & Greed Index
+# ---------------------------------------------------------------------------
+
+def upsert_fear_greed(day, value: int, classification: str):
+    with get_connection() as conn:
+        conn.cursor().execute("""
+            MERGE fear_greed AS t
+            USING (SELECT ? AS d, ? AS v, ? AS c) AS s
+            ON t.[date] = s.d
+            WHEN MATCHED THEN UPDATE SET value = s.v, classification = s.c, updated_at = GETUTCDATE()
+            WHEN NOT MATCHED THEN INSERT ([date], value, classification) VALUES (s.d, s.v, s.c);
+        """, day, value, classification)
+
+
+def get_fear_greed_count() -> int:
+    with get_connection() as conn:
+        return conn.cursor().execute("SELECT COUNT(*) FROM fear_greed").fetchone()[0]
+
+
+def get_fear_greed(days: int = 31) -> pd.DataFrame:
+    with get_connection() as conn:
+        return pd.read_sql("""
+            SELECT TOP (?) [date], value, classification
+            FROM fear_greed ORDER BY [date] DESC
+        """, conn, params=[days])

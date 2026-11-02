@@ -89,8 +89,18 @@ def index():
         print(f"[APP] Error fetching recommendations: {e}")
         recommendations = {"daily_top5": [], "monthly_top5": [], "weekly_top5": [], "generated_at": ""}
 
+    try:
+        quality = ml.get_model_quality()
+    except Exception as e:
+        print(f"[APP] Error fetching model quality: {e}")
+        quality = {}
+
+    fear_greed = _fear_greed_summary()
+
     return render_template(
         "index.html",
+        quality=quality,
+        fear_greed=fear_greed,
         assets=CRYPTO_ASSETS,
         prices=prices,
         predictions=predictions,
@@ -99,6 +109,38 @@ def index():
         horizons=PREDICTION_HORIZONS,
         last_refresh=_last_refresh,
     )
+
+
+def _fear_greed_summary() -> dict:
+    """Latest Fear & Greed value plus yesterday / last week / last month."""
+    try:
+        df = db.get_fear_greed(days=31)
+    except Exception as e:
+        print(f"[APP] Fear & Greed read error: {e}")
+        return {}
+    if df.empty:
+        return {}
+    df = df.sort_values("date", ascending=False).reset_index(drop=True)
+
+    def at(i):
+        if len(df) > i:
+            return {"value": int(df.loc[i, "value"]), "label": df.loc[i, "classification"]}
+        return None
+
+    return {
+        "value": int(df.loc[0, "value"]),
+        "label": df.loc[0, "classification"],
+        "date": str(df.loc[0, "date"])[:10],
+        "yesterday": at(1),
+        "week": at(7),
+        "month": at(30),
+        "series": [int(v) for v in df["value"][::-1].tolist()],
+    }
+
+
+@app.route("/api/fear_greed")
+def api_fear_greed():
+    return jsonify(_fear_greed_summary())
 
 
 @app.route("/api/prices/<symbol>")

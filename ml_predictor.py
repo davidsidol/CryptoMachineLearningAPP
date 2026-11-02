@@ -23,79 +23,125 @@ os.makedirs(MODEL_DIR, exist_ok=True)
 
 TARGETS = ["price_usd", "volume_24h", "market_cap"]
 
-# Lag periods (days) to create features from
-LAG_DAYS = [1, 2, 3, 5, 7, 14, 21, 30]
-ROLLING_WINDOWS = [3, 7, 14, 30]
+MODEL_VERSION = 2   # v2: daily resampling + %-change targets + baseline evaluation
+
+# Lookback windows (in DAYS — data is resampled to one row per day first)
+RET_LAGS = [1, 2, 3, 5, 7, 14, 21, 30]
+VOL_WINDOWS = [7, 14, 30]
+MA_WINDOWS = [7, 14, 30]
 
 
 # ---------------------------------------------------------------------------
-# Feature engineering
+# Step 1 — one row per day
 # ---------------------------------------------------------------------------
+
+def _to_daily(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Collapse mixed-frequency rows (hourly CMC snapshots + daily Coinbase /
+    CoinGecko rows) into exactly one row per calendar day (UTC), using the
+    last observation of each day. Short gaps (<=3 days) are forward-filled so
+    that shift(n) always means n DAYS, never n rows.
+    """
+    if df.empty:
+        return df
+    d = df.copy()
+    d["timestamp"] = pd.to_datetime(d["timestamp"])
+    d = d.sort_values("timestamp")
+    d["date"] = d["timestamp"].dt.normalize()
+    cols = [c for c in ["price_usd", "volume_24h", "market_cap"] if c in d.columns]
+    daily = d.groupby("date")[cols].last()
+    daily = daily.asfreq("D").ffill(limit=3)
+    daily.index.name = "date"
+    return daily
+
+
+# ---------------------------------------------------------------------------
+# Step 2 — scale-free features, %-change targets
+# ---------------------------------------------------------------------------
+
+def _features(daily: pd.DataFrame) -> pd.DataFrame:
+    """Build scale-free features (returns, volatility, distance from averages)
+    so the model generalises to price levels it has never seen."""
+    f = pd.DataFrame(index=daily.index)
+    price = daily["price_usd"]
+    r1 = price.pct_change(1, fill_method=None)
+
+    for k in RET_LAGS:
+        f[f"ret_{k}d"] = price.pct_change(k, fill_method=None)
+    for w in VOL_WINDOWS:
+        f[f"vol_{w}d"] = r1.rolling(w).std()
+    for w in MA_WINDOWS:
+        f[f"px_vs_ma{w}"] = price / price.rolling(w).mean() - 1
+    f["px_vs_high30"] = price / price.rolling(30).max() - 1
+    f["px_vs_low30"] = price / price.rolling(30).min() - 1
+
+    if "volume_24h" in daily:
+        v = daily["volume_24h"]
+        f["volu_chg_1d"] = v.pct_change(1, fill_method=None)
+        f["volu_chg_7d"] = v.pct_change(7, fill_method=None)
+        f["volu_vs_ma7"] = v / v.rolling(7).mean() - 1
+        f["volu_vs_ma30"] = v / v.rolling(30).mean() - 1
+    if "market_cap" in daily:
+        m = daily["market_cap"]
+        f["mcap_chg_7d"] = m.pct_change(7, fill_method=None)
+        f["mcap_chg_30d"] = m.pct_change(30, fill_method=None)
+
+    f["day_of_week"] = f.index.dayofweek
+    f["month"] = f.index.month
+    return f.replace([np.inf, -np.inf], np.nan)
+
 
 def _build_features(df: pd.DataFrame, target_col: str, horizon: int) -> tuple:
     """
-    Build feature matrix X and target vector y from price history.
-
-    Returns (X, y, feature_names)  or (None, None, None) if not enough data.
+    Returns (X, y, feature_names) where y is the % change of target_col
+    `horizon` DAYS ahead.  (None, None, None) if not enough data.
     """
-    df = df.sort_values("timestamp").copy()
-    df = df.dropna(subset=[target_col])
-
-    if len(df) < MIN_TRAINING_ROWS + horizon:
+    daily = _to_daily(df)
+    if daily.empty or target_col not in daily or daily[target_col].notna().sum() < MIN_TRAINING_ROWS + horizon:
         return None, None, None
-
-    # --- base features ---
-    for col in ["price_usd", "volume_24h", "market_cap"]:
-        if col not in df.columns:
-            df[col] = np.nan
-
-    df["day_of_week"] = pd.to_datetime(df["timestamp"]).dt.dayofweek
-    df["day_of_month"] = pd.to_datetime(df["timestamp"]).dt.day
-    df["month"] = pd.to_datetime(df["timestamp"]).dt.month
-
-    feat_cols = ["day_of_week", "day_of_month", "month"]
-
-    for col in ["price_usd", "volume_24h", "market_cap"]:
-        series = df[col].ffill()
-
-        # Lag features
-        for lag in LAG_DAYS:
-            name = f"{col}_lag{lag}"
-            df[name] = series.shift(lag)
-            feat_cols.append(name)
-
-        # Rolling statistics
-        for win in ROLLING_WINDOWS:
-            df[f"{col}_roll_mean{win}"] = series.shift(1).rolling(win).mean()
-            df[f"{col}_roll_std{win}"]  = series.shift(1).rolling(win).std()
-            feat_cols.extend([f"{col}_roll_mean{win}", f"{col}_roll_std{win}"])
-
-        # Rate of change
-        df[f"{col}_roc7"]  = series.pct_change(7)
-        df[f"{col}_roc14"] = series.pct_change(14)
-        feat_cols.extend([f"{col}_roc7", f"{col}_roc14"])
-
-    # Target: value `horizon` days into the future
-    df["target"] = df[target_col].shift(-horizon)
-
-    df = df.dropna(subset=feat_cols + ["target"])
-
-    X = df[feat_cols].values
-    y = df["target"].values
+    f = _features(daily)
+    tgt = daily[target_col]
+    f["target"] = tgt.shift(-horizon) / tgt - 1
+    f = f.replace([np.inf, -np.inf], np.nan)
+    feat_cols = [c for c in f.columns if c != "target"]
+    f = f.dropna(subset=["target", "ret_30d", "vol_30d"])
+    if len(f) < MIN_TRAINING_ROWS:
+        return None, None, None
+    X = f[feat_cols].fillna(0).values
+    y = f["target"].values
     return X, y, feat_cols
 
 
 # ---------------------------------------------------------------------------
-# Training
+# Training (Step 3 — honest out-of-sample evaluation vs a "no change" baseline)
 # ---------------------------------------------------------------------------
+
+def _new_model():
+    # Deliberately conservative: daily crypto returns are mostly noise, so a
+    # shallow, heavily regularised model overfits far less. absolute_error
+    # predicts the median move and matches the MAE we evaluate on.
+    return GradientBoostingRegressor(
+        loss="absolute_error",
+        n_estimators=150,
+        learning_rate=0.02,
+        max_depth=2,
+        subsample=0.7,
+        min_samples_leaf=30,
+        random_state=42,
+    )
+
 
 def train_model(symbol: str, target: str, horizon: int) -> dict:
     """
-    Train a Gradient Boosting model for the given symbol/target/horizon.
-    Returns metrics dict.
+    Train a model that predicts the % change of `target` over `horizon` days.
+    Metrics are all OUT-OF-SAMPLE (walk-forward CV) and compared with the
+    naive "no change" forecast:
+        mae           – model mean abs error of the % change (e.g. 0.031 = 3.1%)
+        baseline_mae  – same for always predicting 0% change
+        skill_score   – 1 - mae/baseline_mae  (>0 = beats no-change)
+        directional   – % of validation days the predicted direction was right
     """
     print(f"[ML] Training {symbol} | {target} | {horizon}d horizon...")
-
     df = db.get_price_history(symbol, days=730)
     if df.empty:
         print(f"[ML] No data for {symbol}")
@@ -103,73 +149,76 @@ def train_model(symbol: str, target: str, horizon: int) -> dict:
 
     X, y, feat_cols = _build_features(df, target, horizon)
     if X is None:
-        print(f"[ML] Not enough data for {symbol}/{target}/{horizon}d "
-              f"(need {MIN_TRAINING_ROWS + horizon} rows, have {len(df)})")
+        print(f"[ML] Not enough daily data for {symbol}/{target}/{horizon}d")
         return {}
 
-    # Time-series cross-validation
-    tscv = TimeSeriesSplit(n_splits=3)
-    cv_mae, cv_rmse = [], []
-
-    gb = GradientBoostingRegressor(
-        n_estimators=300,
-        learning_rate=0.05,
-        max_depth=4,
-        subsample=0.8,
-        min_samples_split=10,
-        random_state=42,
-    )
-
+    tscv = TimeSeriesSplit(n_splits=4, gap=horizon)   # gap avoids overlap leakage
+    preds_all, actual_all = [], []
     for train_idx, val_idx in tscv.split(X):
-        X_tr, X_val = X[train_idx], X[val_idx]
-        y_tr, y_val = y[train_idx], y[val_idx]
-        gb.fit(X_tr, y_tr)
-        preds = gb.predict(X_val)
-        cv_mae.append(mean_absolute_error(y_val, preds))
-        cv_rmse.append(np.sqrt(mean_squared_error(y_val, preds)))
+        gb = _new_model()
+        gb.fit(X[train_idx], y[train_idx])
+        preds_all.append(gb.predict(X[val_idx]))
+        actual_all.append(y[val_idx])
+    p = np.concatenate(preds_all)
+    a = np.concatenate(actual_all)
 
-    # Final fit on all data
+    mae = float(mean_absolute_error(a, p))
+    rmse = float(np.sqrt(mean_squared_error(a, p)))
+    baseline_mae = float(np.mean(np.abs(a)))
+    skill = float(1 - mae / baseline_mae) if baseline_mae > 0 else 0.0
+    nz = a != 0
+    directional = float(np.mean(np.sign(p[nz]) == np.sign(a[nz])) * 100) if nz.any() else 50.0
+    up_share = float(np.mean(a[nz] > 0) * 100) if nz.any() else 50.0
+    oos_r2 = float(r2_score(a, p))
+
+    gb = _new_model()
     gb.fit(X, y)
-    final_preds = gb.predict(X)
-    r2 = r2_score(y, final_preds)
-    mae = float(np.mean(cv_mae))
-    rmse = float(np.mean(cv_rmse))
 
-    # Persist model
     model_path = os.path.join(MODEL_DIR, f"{symbol}_{target}_{horizon}d.pkl")
-    meta = {
+    joblib.dump({
+        "version": MODEL_VERSION,
         "model": gb,
         "feat_cols": feat_cols,
         "symbol": symbol,
         "target": target,
         "horizon": horizon,
+        "mae_pct": mae,
         "trained_at": datetime.utcnow().isoformat(),
-    }
-    joblib.dump(meta, model_path)
+    }, model_path)
 
-    # Save metrics to DB
     with db.get_connection() as conn:
         cursor = conn.cursor()
-        # deactivate old
         cursor.execute("""
             UPDATE ml_models SET is_active = 0
             WHERE symbol = ? AND target = ? AND horizon_days = ?
         """, symbol, target, horizon)
         cursor.execute("""
             INSERT INTO ml_models
-                (symbol, target, horizon_days, model_file, mae, rmse,
-                 r2_score, training_rows, is_active)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)
-        """, symbol, target, horizon, model_path, mae, rmse, r2, len(y))
-        model_id = cursor.execute("SELECT @@IDENTITY").fetchone()[0]
+                (symbol, target, horizon_days, model_file, mae, rmse, r2_score,
+                 training_rows, is_active, baseline_mae, skill_score,
+                 directional_acc, up_share, model_version)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?)
+        """, symbol, target, horizon, model_path, mae, rmse, oos_r2, len(y),
+             baseline_mae, skill, directional, up_share, MODEL_VERSION)
 
-    metrics = {
+    print(f"[ML] {symbol}/{target}/{horizon}d | MAE={mae*100:.2f}% vs no-change {baseline_mae*100:.2f}% "
+          f"| skill={skill*100:+.1f}% | dir={directional:.1f}% (up-days {up_share:.0f}%) | rows={len(y)}")
+    return {
         "symbol": symbol, "target": target, "horizon": horizon,
-        "mae": mae, "rmse": rmse, "r2": r2,
-        "rows": len(y), "model_path": model_path,
+        "mae": mae, "baseline_mae": baseline_mae, "skill": skill,
+        "directional": directional, "rows": len(y), "model_path": model_path,
     }
-    print(f"[ML] {symbol}/{target}/{horizon}d | MAE={mae:.4f} RMSE={rmse:.4f} R²={r2:.4f}")
-    return metrics
+
+
+def model_is_current(symbol: str, target: str, horizon: int) -> bool:
+    """True if a model file exists AND was built by the current MODEL_VERSION."""
+    path = os.path.join(MODEL_DIR, f"{symbol}_{target}_{horizon}d.pkl")
+    if not os.path.exists(path):
+        return False
+    try:
+        return joblib.load(path).get("version") == MODEL_VERSION
+    except Exception:
+        return False
 
 
 def train_all(only_missing: bool = False):
@@ -179,8 +228,7 @@ def train_all(only_missing: bool = False):
     for symbol in CRYPTO_ASSETS:
         for target in TARGETS:
             for horizon in PREDICTION_HORIZONS:
-                if only_missing and os.path.exists(
-                        os.path.join(MODEL_DIR, f"{symbol}_{target}_{horizon}d.pkl")):
+                if only_missing and model_is_current(symbol, target, horizon):
                     continue
                 try:
                     m = train_model(symbol, target, horizon)
@@ -206,62 +254,30 @@ def _load_model(symbol: str, target: str, horizon: int):
 
 def predict(symbol: str, target: str, horizon: int) -> dict:
     """
-    Generate a prediction for the given symbol/target/horizon.
-    Returns dict with predicted_value, lower, upper, predicted_for.
+    Predict `target` `horizon` days ahead. The model outputs a % change, which
+    is applied to the latest daily value. The confidence band is the model's
+    out-of-sample mean absolute % error.
     """
     meta = _load_model(symbol, target, horizon)
-    if meta is None:
+    if meta is None or meta.get("version") != MODEL_VERSION:
         return None
 
     df = db.get_price_history(symbol, days=120)
-    if df.empty or len(df) < 35:
+    daily = _to_daily(df)
+    if daily.empty or len(daily) < 35 or target not in daily:
         return None
+    current = daily[target].dropna()
+    if current.empty:
+        return None
+    current = float(current.iloc[-1])
 
-    # Build the same features on the latest available row
-    df = df.sort_values("timestamp").copy()
-
-    # We need to replicate feature engineering on the tail of the DF
-    for col in ["price_usd", "volume_24h", "market_cap"]:
-        if col not in df.columns:
-            df[col] = np.nan
-
-    df["day_of_week"] = pd.to_datetime(df["timestamp"]).dt.dayofweek
-    df["day_of_month"] = pd.to_datetime(df["timestamp"]).dt.day
-    df["month"] = pd.to_datetime(df["timestamp"]).dt.month
-
-    for col in ["price_usd", "volume_24h", "market_cap"]:
-        series = df[col].ffill()
-        for lag in LAG_DAYS:
-            df[f"{col}_lag{lag}"] = series.shift(lag)
-        for win in ROLLING_WINDOWS:
-            df[f"{col}_roll_mean{win}"] = series.shift(1).rolling(win).mean()
-            df[f"{col}_roll_std{win}"]  = series.shift(1).rolling(win).std()
-        df[f"{col}_roc7"]  = series.pct_change(7)
-        df[f"{col}_roc14"] = series.pct_change(14)
-
-    feat_cols = meta["feat_cols"]
-    model = meta["model"]
-
-    row = df[feat_cols].iloc[-1]
+    f = _features(daily)
+    row = f[meta["feat_cols"]].iloc[-1]
     if row.isnull().all():
         return None
-
-    row_filled = row.fillna(0).values.reshape(1, -1)
-    pred_value = float(model.predict(row_filled)[0])
-
-    # Confidence interval: use MAE from training as proxy
-    try:
-        with db.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT TOP 1 mae FROM ml_models
-                WHERE symbol=? AND target=? AND horizon_days=? AND is_active=1
-                ORDER BY trained_at DESC
-            """, symbol, target, horizon)
-            row_db = cursor.fetchone()
-            margin = row_db[0] if row_db else pred_value * 0.05
-    except Exception:
-        margin = pred_value * 0.05
+    pct = float(meta["model"].predict(row.fillna(0).values.reshape(1, -1))[0])
+    pred_value = current * (1 + pct)
+    margin = abs(current) * float(meta.get("mae_pct", 0.05))
 
     predicted_for = (datetime.utcnow() + timedelta(days=horizon)).replace(
         hour=0, minute=0, second=0, microsecond=0)
@@ -272,25 +288,46 @@ def predict(symbol: str, target: str, horizon: int) -> dict:
         "horizon": horizon,
         "predicted_for": predicted_for,
         "predicted_value": pred_value,
-        "lower_bound": pred_value - margin,
+        "predicted_pct": pct,
+        "lower_bound": max(pred_value - margin, 0),
         "upper_bound": pred_value + margin,
     }
-
-    # Persist to DB
     try:
         db.save_prediction(
-            symbol=symbol,
-            target=target,
-            horizon=horizon,
-            predicted_for=predicted_for,
-            value=pred_value,
-            lower=result["lower_bound"],
-            upper=result["upper_bound"],
+            symbol=symbol, target=target, horizon=horizon,
+            predicted_for=predicted_for, value=pred_value,
+            lower=result["lower_bound"], upper=result["upper_bound"],
         )
     except Exception as e:
         print(f"[ML] Could not save prediction: {e}")
-
     return result
+
+
+def get_model_quality() -> dict:
+    """
+    Out-of-sample backtest stats of the active models:
+    { symbol -> { horizon_str -> { target -> {skill, directional, mae_pct, baseline_mae_pct, up_share} } } }
+    """
+    out = {}
+    try:
+        with db.get_connection() as conn:
+            rows = conn.cursor().execute("""
+                SELECT symbol, target, horizon_days, mae, baseline_mae, skill_score,
+                       directional_acc, up_share
+                FROM ml_models
+                WHERE is_active = 1 AND model_version = ?
+            """, MODEL_VERSION).fetchall()
+        for r in rows:
+            out.setdefault(r[0], {}).setdefault(str(int(r[2])), {})[r[1]] = {
+                "mae_pct": round(float(r[3]) * 100, 2),
+                "baseline_mae_pct": round(float(r[4]) * 100, 2),
+                "skill": round(float(r[5]) * 100, 1),
+                "directional": round(float(r[6]), 1),
+                "up_share": round(float(r[7]), 1),
+            }
+    except Exception as e:
+        print(f"[ML] get_model_quality error: {e}")
+    return out
 
 
 def predict_all() -> list:

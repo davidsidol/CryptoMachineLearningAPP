@@ -30,24 +30,20 @@ def _run_startup():
         if new_syms:
             startup_state["stage"] = f"Bootstrapping 365 days of history for {', '.join(new_syms)}…"
             dc.bootstrap_symbols(new_syms, days=365)
+        startup_state["stage"] = "Loading Fear & Greed history…"
+        dc.ensure_fear_greed_history()
         startup_state["stage"] = "Refreshing latest market data…"
         dc.refresh_all()
 
-        # 3. Check whether saved models exist — skip training if all 27 present
-        model_dir = ml.MODEL_DIR
-        expected = [
-            f"{sym}_{tgt}_{h}d.pkl"
-            for sym in CRYPTO_ASSETS
-            for tgt in ml.TARGETS
-            for h in ml.PREDICTION_HORIZONS
-        ]
-        missing = [f for f in expected if not os.path.exists(os.path.join(model_dir, f))]
-
+        # 3. Train any model that is missing or built by an older MODEL_VERSION
+        expected = [(sym, tgt, h) for sym in CRYPTO_ASSETS
+                    for tgt in ml.TARGETS for h in ml.PREDICTION_HORIZONS]
+        missing = [e for e in expected if not ml.model_is_current(*e)]
         if missing:
-            startup_state["stage"] = f"Training {len(missing)} missing ML models…"
+            startup_state["stage"] = f"Training {len(missing)} ML models (v{ml.MODEL_VERSION})…"
             ml.train_all(only_missing=True)
         else:
-            startup_state["stage"] = "ML models already trained — skipping retrain…"
+            startup_state["stage"] = "ML models up to date — skipping retrain…"
             time.sleep(1)
 
         # 4. Predictions

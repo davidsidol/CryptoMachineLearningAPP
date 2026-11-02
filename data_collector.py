@@ -346,9 +346,49 @@ def bootstrap_all(days: int = 365):
     print("\n[BOOTSTRAP] Done.")
 
 
+# ---------------------------------------------------------------------------
+# Crypto Fear & Greed Index (alternative.me — free, no key, history from 2018)
+# ---------------------------------------------------------------------------
+
+FNG_URL = "https://api.alternative.me/fng/"
+
+
+def fetch_fear_greed(limit: int = 2) -> int:
+    """limit=0 returns the full history."""
+    try:
+        r = requests.get(FNG_URL, params={"limit": limit, "format": "json"}, timeout=20)
+        r.raise_for_status()
+        rows = r.json().get("data", [])
+    except Exception as e:
+        print(f"[FNG] Fetch failed: {e}")
+        db.log_collection("fear_greed", "ALL", 0, "error", str(e)[:500])
+        return 0
+    n = 0
+    for row in rows:
+        try:
+            day = datetime.fromtimestamp(int(row["timestamp"]), tz=timezone.utc).date()
+            db.upsert_fear_greed(day, int(row["value"]), row.get("value_classification", ""))
+            n += 1
+        except Exception as e:
+            print(f"[FNG] Row error: {e}")
+    db.log_collection("fear_greed", "ALL", n, "success")
+    print(f"[FNG] {n} Fear & Greed rows upserted.")
+    return n
+
+
+def ensure_fear_greed_history():
+    """Backfill the full index history once (table empty)."""
+    try:
+        if db.get_fear_greed_count() < 30:
+            fetch_fear_greed(limit=0)
+    except Exception as e:
+        print(f"[FNG] Backfill error: {e}")
+
+
 def refresh_all():
     """Pull latest quotes (called by scheduler)."""
     print("[REFRESH] Fetching latest quotes...")
+    fetch_fear_greed(limit=2)
     fetch_latest_quotes()
     for symbol in CRYPTO_ASSETS:
         fetch_coinbase_candles(symbol, days=2)  # last 2 days
