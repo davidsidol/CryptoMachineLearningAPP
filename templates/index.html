@@ -175,6 +175,27 @@ body { font-family: 'Inter', 'Segoe UI', system-ui, sans-serif; position: relati
 }
 .bt-line { font-size: .64rem; color: #94a3b8; margin-top: .55rem; text-align: center; }
 .bt-good { color: #4ade80; } .bt-bad { color: #f87171; } .bt-mid { color: #facc15; }
+
+/* Futures & options */
+.mk-title { font-family:'Space Grotesk',sans-serif; font-weight:700; font-size:1.05rem; color:#fff; }
+.mk-sub { font-size:.72rem; color:#94a3b8; }
+.mk-table { width:100%; border-collapse:separate; border-spacing:0; }
+.mk-table th { font-size:.62rem; text-transform:uppercase; letter-spacing:.07em; color:#94a3b8; font-weight:600; padding:.45rem .5rem; border-bottom:1px solid var(--glass-border); white-space:nowrap; }
+.mk-table td { padding:.5rem .5rem; border-bottom:1px solid rgba(148,163,255,.07); font-size:.84rem; white-space:nowrap; }
+.mk-table tr:last-child td { border-bottom:none; }
+.mk-table tr:hover td { background:rgba(255,255,255,.025); }
+.mk-coin img { width:20px; height:20px; border-radius:50%; margin-right:6px; vertical-align:-5px; }
+.pill { font-size:.66rem; font-weight:700; padding:2px 8px; border-radius:999px; display:inline-block; }
+.pill-long { background:rgba(74,222,128,.12); color:#4ade80; border:1px solid rgba(74,222,128,.28); }
+.pill-short { background:rgba(248,113,113,.12); color:#f87171; border:1px solid rgba(248,113,113,.28); }
+.pill-neutral { background:rgba(148,163,184,.12); color:#cbd5e1; border:1px solid rgba(148,163,184,.25); }
+.lev-bar { height:5px; border-radius:3px; background:rgba(255,255,255,.07); width:70px; display:inline-block; vertical-align:middle; margin-left:6px; overflow:hidden; }
+.lev-bar span { display:block; height:100%; border-radius:3px; background:linear-gradient(90deg,#22d3ee,#8b5cf6,#ec4899); }
+.opt-card { background:var(--glass-2); border:1px solid var(--glass-border); border-radius:14px; padding:1rem; }
+.opt-big { font-family:'Space Grotesk',sans-serif; font-size:1.5rem; font-weight:700; line-height:1.1; color:#fff; }
+.opt-card .mk-coin { color:#cbd5e1; }
+.pc-bar { display:flex; height:8px; border-radius:4px; overflow:hidden; margin:.4rem 0 .2rem; }
+.pc-bar .c { background:#4ade80; } .pc-bar .p { background:#f87171; }
 </style>
 </head>
 <body>
@@ -351,6 +372,89 @@ body { font-family: 'Inter', 'Segoe UI', system-ui, sans-serif; position: relati
     </div>
     {% endfor %}
   </div>
+
+
+  <!-- Futures & Options Leverage -->
+  {% set mk = market if market is defined else {} %}
+  {% if mk.get('futures') or mk.get('options') %}
+  <div class="row g-3 mb-4">
+    <div class="col-xl-8">
+      <div class="card p-3 h-100">
+        <div class="d-flex justify-content-between align-items-start mb-2">
+          <div>
+            <div class="mk-title"><i class="bi bi-speedometer2 me-2" style="color:var(--accent-1)"></i>Futures Positioning &amp; Leverage</div>
+            <div class="mk-sub">Hyperliquid perpetuals · funding shown as annualised rate · OI = open interest{% if mk.updated %} · {{ mk.updated }} UTC{% endif %}</div>
+          </div>
+        </div>
+        <div class="table-responsive">
+          <table class="mk-table">
+            <thead><tr>
+              <th>Asset</th><th class="text-end">Funding (APR)</th><th>Who's paying</th>
+              <th class="text-end">Open interest</th><th class="text-end">OI 24h</th>
+              <th>Leverage (OI / mkt cap)</th><th>Direction read</th><th class="text-end">Max lev</th>
+            </tr></thead>
+            <tbody>
+            {% for f in mk.futures %}
+              <tr>
+                <td class="mk-coin"><img src="https://s2.coinmarketcap.com/static/img/coins/64x64/{{ f.cmc_id }}.png" alt="" loading="lazy" onerror="this.remove()"/><b style="color:#fff">{{ f.symbol }}</b></td>
+                <td class="text-end" style="font-weight:700;color:{{ '#4ade80' if (f.funding_apr or 0) > 5 else ('#f87171' if (f.funding_apr or 0) < -1 else '#cbd5e1') }}">
+                  {% if f.funding_apr is not none %}{{ '+' if f.funding_apr > 0 else '' }}{{ '%.1f'|format(f.funding_apr) }}%{% else %}–{% endif %}
+                </td>
+                <td>{% if f.bias %}<span class="pill pill-{{ f.bias[1] }}">{{ f.bias[0] }}</span>{% else %}–{% endif %}</td>
+                <td class="text-end">{% if f.oi_usd %}${{ '{:,.0f}'.format(f.oi_usd / 1e6) }}M{% else %}–{% endif %}</td>
+                <td class="text-end {{ 'positive' if (f.oi_chg_24h or 0) >= 0 else 'negative' }}">
+                  {% if f.oi_chg_24h is not none %}{{ '+' if f.oi_chg_24h >= 0 else '' }}{{ '%.1f'|format(f.oi_chg_24h) }}%{% else %}<span style="color:#64748b">collecting…</span>{% endif %}
+                </td>
+                <td>
+                  {% if f.oi_to_mcap is not none %}
+                    {{ '%.2f'|format(f.oi_to_mcap) }}%<span class="lev-bar"><span style="width:{{ [f.oi_to_mcap * 20, 100]|min }}%"></span></span>
+                  {% else %}–{% endif %}
+                </td>
+                <td>{% if f.positioning %}<span class="pill pill-{{ f.positioning[1] }}">{{ f.positioning[0] }}</span>{% else %}<span style="color:#64748b;font-size:.75rem">needs 24h of data</span>{% endif %}</td>
+                <td class="text-end" style="color:#94a3b8">{% if f.max_leverage %}{{ f.max_leverage }}×{% else %}–{% endif %}</td>
+              </tr>
+            {% endfor %}
+            </tbody>
+          </table>
+        </div>
+        <div class="mk-sub mt-2">
+          Positive funding = longs pay shorts (crowded long); negative = shorts pay longs. Direction read compares the 24h change in open interest with price:
+          rising OI + rising price = new longs, rising OI + falling price = new shorts.
+        </div>
+      </div>
+    </div>
+    <div class="col-xl-4">
+      <div class="card p-3 h-100">
+        <div class="mk-title mb-1"><i class="bi bi-bullseye me-2" style="color:var(--accent-2)"></i>Options Positioning</div>
+        <div class="mk-sub mb-3">Deribit · put/call open interest and implied volatility (DVOL)</div>
+        {% for o in mk.options %}
+        <div class="opt-card {{ '' if loop.last else 'mb-3' }}">
+          <div class="d-flex justify-content-between align-items-center mb-2">
+            <div class="mk-coin"><img src="https://s2.coinmarketcap.com/static/img/coins/64x64/{{ o.cmc_id }}.png" alt="" loading="lazy" onerror="this.remove()"/><b style="color:#fff">{{ o.currency }}</b> options</div>
+            {% if o.lean %}<span class="pill {{ 'pill-long' if o.lean == 'Bullish lean' else ('pill-short' if o.lean == 'Bearish lean' else 'pill-neutral') }}">{{ o.lean }}</span>{% endif %}
+          </div>
+          <div class="row g-2">
+            <div class="col-4"><div class="metric-label" style="color:#94a3b8">Put/Call</div><div class="opt-big">{% if o.put_call_ratio is not none %}{{ '%.2f'|format(o.put_call_ratio) }}{% else %}–{% endif %}</div></div>
+            <div class="col-4"><div class="metric-label" style="color:#94a3b8">Implied vol</div><div class="opt-big">{% if o.dvol %}{{ '%.0f'|format(o.dvol) }}%{% else %}–{% endif %}</div></div>
+            <div class="col-4"><div class="metric-label" style="color:#94a3b8">Options OI</div><div class="opt-big">{% if o.oi_usd %}${{ '{:,.1f}'.format(o.oi_usd / 1e9) }}B{% else %}–{% endif %}</div></div>
+          </div>
+          {% set tot = o.call_oi + o.put_oi %}
+          {% if tot > 0 %}
+          <div class="pc-bar"><div class="c" style="width:{{ o.call_oi / tot * 100 }}%"></div><div class="p" style="width:{{ o.put_oi / tot * 100 }}%"></div></div>
+          <div class="d-flex justify-content-between" style="font-size:.66rem;color:#94a3b8">
+            <span>Calls {{ '%.0f'|format(o.call_oi / tot * 100) }}%</span>
+            {% if o.implied_daily_move %}<span>Expected daily move ±{{ '%.1f'|format(o.implied_daily_move) }}%</span>{% endif %}
+            <span>Puts {{ '%.0f'|format(o.put_oi / tot * 100) }}%</span>
+          </div>
+          {% endif %}
+        </div>
+        {% else %}
+        <div class="mk-sub">Collecting options data…</div>
+        {% endfor %}
+      </div>
+    </div>
+  </div>
+  {% endif %}
 
   <!-- ML Recommendations -->
   {% set recs = recommendations if recommendations is defined else {} %}

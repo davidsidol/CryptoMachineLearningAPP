@@ -385,10 +385,158 @@ def ensure_fear_greed_history():
         print(f"[FNG] Backfill error: {e}")
 
 
+# ---------------------------------------------------------------------------
+# Futures & options market context
+#   Hyperliquid perps (public, no key): funding history, open interest, leverage
+#   Deribit options (public, no key): BTC/ETH put/call open interest + DVOL
+# ---------------------------------------------------------------------------
+
+HL_URL = "https://api.hyperliquid.xyz/info"
+DERIBIT_URL = "https://www.deribit.com/api/v2/public"
+OPTIONS_CURRENCIES = ["BTC", "ETH"]
+
+
+def _hl(payload: dict):
+    r = requests.post(HL_URL, json=payload, timeout=30)
+    r.raise_for_status()
+    return r.json()
+
+
+def fetch_funding_history(symbol: str, days: int = 3) -> int:
+    """Pull hourly funding from Hyperliquid and store one averaged row per day."""
+    start = int((datetime.now(timezone.utc) - timedelta(days=days)).timestamp() * 1000)
+    rows = []
+    try:
+        while True:
+            page = _hl({"type": "fundingHistory", "coin": symbol, "startTime": start})
+            if not page:
+                break
+            rows.extend(page)
+            if len(page) < 500:
+                break
+            start = int(page[-1]["time"]) + 1
+            time.sleep(0.4)
+    except Exception as e:
+        print(f"[HL] Funding history failed for {symbol}: {e}")
+        db.log_collection("hl_funding", symbol, 0, "error", str(e)[:500])
+        return 0
+    if not rows:
+        return 0
+    by_day = {}
+    for r in rows:
+        d = datetime.fromtimestamp(int(r["time"]) / 1000, tz=timezone.utc).date()
+        f, p = float(r["fundingRate"]), r.get("premium")
+        agg = by_day.setdefault(d, [0.0, 0.0, 0, 0])
+        agg[0] += f; agg[2] += 1
+        if p is not None:
+            agg[1] += float(p); agg[3] += 1
+    n = 0
+    for d, (fs, ps, fc, pc) in by_day.items():
+        try:
+            db.upsert_funding_daily(symbol, d, fs / fc, (ps / pc) if pc else None, fc)
+            n += 1
+        except Exception as e:
+            print(f"[HL] DB error {symbol} {d}: {e}")
+    db.log_collection("hl_funding", symbol, n, "success")
+    print(f"[HL] {symbol}: {n} daily funding rows upserted ({len(rows)} hourly samples).")
+    return n
+
+
+def ensure_funding_history(days: int = 730):
+    """Backfill ~2 years of daily funding for any symbol that has little history."""
+    for symbol in CRYPTO_ASSETS:
+        try:
+            if db.get_funding_count(symbol) < 30:
+                fetch_funding_history(symbol, days=days)
+        except Exception as e:
+            print(f"[HL] Backfill error {symbol}: {e}")
+
+
+def fetch_futures_snapshot() -> int:
+    """Current funding, open interest and max leverage for every tracked perp."""
+    try:
+        meta, ctxs = _hl({"type": "metaAndAssetCtxs"})
+    except Exception as e:
+        print(f"[HL] Snapshot failed: {e}")
+        db.log_collection("hl_snapshot", "ALL", 0, "error", str(e)[:500])
+        return 0
+    rows = []
+    for asset, ctx in zip(meta["universe"], ctxs):
+        sym = asset["name"]
+        if sym not in CRYPTO_ASSETS or asset.get("isDelisted"):
+            continue
+        try:
+            mark = float(ctx.get("markPx") or ctx.get("oraclePx") or 0)
+            oi = float(ctx.get("openInterest") or 0)
+            rows.append({
+                "symbol": sym,
+                "funding": float(ctx.get("funding") or 0),
+                "open_interest": oi,
+                "oi_usd": oi * mark,
+                "mark_px": mark,
+                "premium": float(ctx["premium"]) if ctx.get("premium") is not None else None,
+                "day_volume_usd": float(ctx.get("dayNtlVlm") or 0),
+                "max_leverage": int(asset.get("maxLeverage") or 0),
+            })
+        except Exception as e:
+            print(f"[HL] Parse error {sym}: {e}")
+    if rows:
+        db.insert_futures_snapshot(rows)
+    db.log_collection("hl_snapshot", "ALL", len(rows), "success")
+    print(f"[HL] Futures snapshot: {len(rows)} symbols.")
+    return len(rows)
+
+
+def fetch_options_snapshot() -> int:
+    """Deribit BTC/ETH options: call vs put open interest and the DVOL index."""
+    out = []
+    for cur in OPTIONS_CURRENCIES:
+        try:
+            r = requests.get(f"{DERIBIT_URL}/get_book_summary_by_currency",
+                             params={"currency": cur, "kind": "option"}, timeout=30)
+            r.raise_for_status()
+            book = r.json().get("result", [])
+            calls = sum(float(x.get("open_interest") or 0) for x in book if x["instrument_name"].endswith("-C"))
+            puts = sum(float(x.get("open_interest") or 0) for x in book if x["instrument_name"].endswith("-P"))
+            px = next((float(x["underlying_price"]) for x in book if x.get("underlying_price")), None)
+            now_ms = int(time.time() * 1000)
+            v = requests.get(f"{DERIBIT_URL}/get_volatility_index_data",
+                             params={"currency": cur, "start_timestamp": now_ms - 3 * 3600 * 1000,
+                                     "end_timestamp": now_ms, "resolution": "3600"}, timeout=30).json()
+            data = v.get("result", {}).get("data", [])
+            dvol = float(data[-1][4]) if data else None
+            out.append({
+                "currency": cur, "call_oi": calls, "put_oi": puts,
+                "put_call_ratio": (puts / calls) if calls else None,
+                "oi_usd": (calls + puts) * px if px else None,
+                "dvol": dvol, "underlying_px": px,
+            })
+        except Exception as e:
+            print(f"[DERIBIT] {cur} failed: {e}")
+            db.log_collection("deribit_options", cur, 0, "error", str(e)[:500])
+    if out:
+        db.insert_options_snapshot(out)
+        db.log_collection("deribit_options", "ALL", len(out), "success")
+    return len(out)
+
+
+def refresh_market_context():
+    """Hourly: futures + options snapshots and the last few days of funding."""
+    fetch_futures_snapshot()
+    fetch_options_snapshot()
+    for symbol in CRYPTO_ASSETS:
+        fetch_funding_history(symbol, days=3)
+        time.sleep(0.3)
+
+
 def refresh_all():
     """Pull latest quotes (called by scheduler)."""
     print("[REFRESH] Fetching latest quotes...")
     fetch_fear_greed(limit=2)
+    try:
+        refresh_market_context()
+    except Exception as e:
+        print(f"[REFRESH] Market context error: {e}")
     fetch_latest_quotes()
     for symbol in CRYPTO_ASSETS:
         fetch_coinbase_candles(symbol, days=2)  # last 2 days

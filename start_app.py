@@ -32,6 +32,8 @@ def _run_startup():
             dc.bootstrap_symbols(new_syms, days=365)
         startup_state["stage"] = "Loading Fear & Greed history…"
         dc.ensure_fear_greed_history()
+        startup_state["stage"] = "Loading futures funding history…"
+        dc.ensure_funding_history()
         startup_state["stage"] = "Refreshing latest market data…"
         dc.refresh_all()
 

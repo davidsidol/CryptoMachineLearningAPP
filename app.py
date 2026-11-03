@@ -96,11 +96,13 @@ def index():
         quality = {}
 
     fear_greed = _fear_greed_summary()
+    market = _market_context_summary(prices)
 
     return render_template(
         "index.html",
         quality=quality,
         fear_greed=fear_greed,
+        market=market,
         assets=CRYPTO_ASSETS,
         prices=prices,
         predictions=predictions,
@@ -136,6 +138,92 @@ def _fear_greed_summary() -> dict:
         "month": at(30),
         "series": [int(v) for v in df["value"][::-1].tolist()],
     }
+
+
+def _positioning(oi_chg, px_chg):
+    """Classic OI-vs-price read of what futures traders are doing."""
+    if oi_chg is None or px_chg is None:
+        return None
+    if abs(oi_chg) < 1.0:
+        return ("Flat positioning", "neutral")
+    if oi_chg > 0 and px_chg >= 0:
+        return ("New longs opening", "long")
+    if oi_chg > 0 and px_chg < 0:
+        return ("New shorts opening", "short")
+    if oi_chg < 0 and px_chg >= 0:
+        return ("Shorts covering", "long")
+    return ("Longs closing", "short")
+
+
+def _market_context_summary(prices: dict) -> dict:
+    """Perp funding / open interest / leverage per coin and BTC/ETH options."""
+    out = {"futures": [], "options": [], "updated": None}
+    try:
+        fut = db.get_futures_latest()
+    except Exception as e:
+        print(f"[APP] futures read error: {e}")
+        fut = None
+    if fut is not None and not fut.empty:
+        fut = fut.set_index("symbol")
+        for sym in CRYPTO_ASSETS:
+            if sym not in fut.index:
+                continue
+            r = fut.loc[sym]
+            apr = float(r["funding"]) * 24 * 365 * 100 if r["funding"] is not None else None
+            oi = float(r["oi_usd"]) if r["oi_usd"] is not None else None
+            prev = r.get("oi_usd_24h_ago")
+            oi_chg = (oi / float(prev) - 1) * 100 if oi and prev and float(prev) > 0 else None
+            p = prices.get(sym, {})
+            mcap = p.get("market_cap")
+            px_chg = p.get("pct_24h")
+            bias = None
+            if apr is not None:
+                bias = ("Longs paying", "long") if apr > 5 else (("Shorts paying", "short") if apr < -1 else ("Balanced", "neutral"))
+            out["futures"].append({
+                "symbol": sym,
+                "name": CRYPTO_ASSETS[sym]["name"],
+                "cmc_id": CRYPTO_ASSETS[sym]["cmc_id"],
+                "color": CRYPTO_ASSETS[sym]["color"],
+                "funding_apr": apr,
+                "bias": bias,
+                "oi_usd": oi,
+                "oi_chg_24h": oi_chg,
+                "oi_to_mcap": (oi / mcap * 100) if oi and mcap else None,
+                "max_leverage": int(r["max_leverage"]) if r["max_leverage"] else None,
+                "positioning": _positioning(oi_chg, px_chg),
+                "day_volume_usd": float(r["day_volume_usd"]) if r["day_volume_usd"] else None,
+            })
+            out["updated"] = str(r["ts"])[:16]
+    try:
+        opt = db.get_options_latest()
+        for _, r in opt.iterrows():
+            pcr = float(r["put_call_ratio"]) if r["put_call_ratio"] is not None else None
+            dvol = float(r["dvol"]) if r["dvol"] is not None else None
+            out["options"].append({
+                "currency": r["currency"],
+                "cmc_id": CRYPTO_ASSETS.get(r["currency"], {}).get("cmc_id"),
+                "put_call_ratio": pcr,
+                "lean": None if pcr is None else ("Bullish lean" if pcr < 0.7 else ("Bearish lean" if pcr > 1.0 else "Neutral")),
+                "oi_usd": float(r["oi_usd"]) if r["oi_usd"] is not None else None,
+                "dvol": dvol,
+                "implied_daily_move": dvol / (365 ** 0.5) if dvol else None,
+                "call_oi": float(r["call_oi"] or 0),
+                "put_oi": float(r["put_oi"] or 0),
+            })
+    except Exception as e:
+        print(f"[APP] options read error: {e}")
+    return out
+
+
+@app.route("/api/market_context")
+def api_market_context():
+    try:
+        latest = db.get_latest_prices()
+        prices = {row["symbol"]: {"market_cap": row["market_cap"], "pct_24h": row.get("pct_change_24h")}
+                  for _, row in latest.iterrows()}
+    except Exception:
+        prices = {}
+    return jsonify(_market_context_summary(prices))
 
 
 @app.route("/api/fear_greed")

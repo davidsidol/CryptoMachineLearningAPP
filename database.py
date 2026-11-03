@@ -164,6 +164,57 @@ def setup_database():
             )
         """)
 
+        # Perp funding (Hyperliquid), aggregated to one row per day
+        cursor.execute("""
+            IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='funding_daily' AND xtype='U')
+            CREATE TABLE funding_daily (
+                symbol       NVARCHAR(10) NOT NULL,
+                [date]       DATE         NOT NULL,
+                funding_avg  FLOAT        NOT NULL,   -- mean hourly funding rate
+                premium_avg  FLOAT,
+                samples      INT,
+                CONSTRAINT PK_funding_daily PRIMARY KEY (symbol, [date])
+            )
+        """)
+
+        # Hourly perp market snapshot (funding, open interest, leverage)
+        cursor.execute("""
+            IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='futures_snapshot' AND xtype='U')
+            CREATE TABLE futures_snapshot (
+                id             BIGINT IDENTITY(1,1) PRIMARY KEY,
+                symbol         NVARCHAR(10) NOT NULL,
+                ts             DATETIME2    NOT NULL DEFAULT GETUTCDATE(),
+                venue          NVARCHAR(20) NOT NULL DEFAULT 'hyperliquid',
+                funding        FLOAT,
+                open_interest  FLOAT,       -- in coins
+                oi_usd         FLOAT,
+                mark_px        FLOAT,
+                premium        FLOAT,
+                day_volume_usd FLOAT,
+                max_leverage   INT
+            )
+        """)
+        cursor.execute("""
+            IF NOT EXISTS (SELECT * FROM sys.indexes WHERE name='IX_futures_snapshot_sym_ts')
+            CREATE INDEX IX_futures_snapshot_sym_ts ON futures_snapshot (symbol, ts)
+        """)
+
+        # Hourly options snapshot (Deribit, BTC/ETH)
+        cursor.execute("""
+            IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='options_snapshot' AND xtype='U')
+            CREATE TABLE options_snapshot (
+                id              BIGINT IDENTITY(1,1) PRIMARY KEY,
+                currency        NVARCHAR(10) NOT NULL,
+                ts              DATETIME2    NOT NULL DEFAULT GETUTCDATE(),
+                call_oi         FLOAT,
+                put_oi          FLOAT,
+                put_call_ratio  FLOAT,
+                oi_usd          FLOAT,
+                dvol            FLOAT,
+                underlying_px   FLOAT
+            )
+        """)
+
         print("[DB] All tables created/verified.")
 
 
@@ -424,3 +475,93 @@ def get_fear_greed(days: int = 31) -> pd.DataFrame:
             SELECT TOP (?) [date], value, classification
             FROM fear_greed ORDER BY [date] DESC
         """, conn, params=[days])
+
+
+# ---------------------------------------------------------------------------
+# Futures / options market context
+# ---------------------------------------------------------------------------
+
+def upsert_funding_daily(symbol: str, day, funding_avg: float, premium_avg, samples: int):
+    with get_connection() as conn:
+        conn.cursor().execute("""
+            MERGE funding_daily AS t
+            USING (SELECT ? AS s, ? AS d) AS k ON t.symbol = k.s AND t.[date] = k.d
+            WHEN MATCHED THEN UPDATE SET funding_avg = ?, premium_avg = ?, samples = ?
+            WHEN NOT MATCHED THEN INSERT (symbol, [date], funding_avg, premium_avg, samples)
+                 VALUES (?, ?, ?, ?, ?);
+        """, symbol, day, funding_avg, premium_avg, samples,
+             symbol, day, funding_avg, premium_avg, samples)
+
+
+def get_funding_count(symbol: str) -> int:
+    with get_connection() as conn:
+        return conn.cursor().execute(
+            "SELECT COUNT(*) FROM funding_daily WHERE symbol = ?", symbol).fetchone()[0]
+
+
+def get_funding_daily(symbol: str, days: int = 730) -> pd.DataFrame:
+    with get_connection() as conn:
+        return pd.read_sql("""
+            SELECT [date], funding_avg, premium_avg FROM funding_daily
+            WHERE symbol = ? AND [date] >= DATEADD(day, -?, CAST(GETUTCDATE() AS DATE))
+            ORDER BY [date]
+        """, conn, params=[symbol, days])
+
+
+def insert_futures_snapshot(rows: list):
+    with get_connection() as conn:
+        cur = conn.cursor()
+        for r in rows:
+            cur.execute("""
+                INSERT INTO futures_snapshot
+                    (symbol, venue, funding, open_interest, oi_usd, mark_px, premium,
+                     day_volume_usd, max_leverage)
+                VALUES (?, 'hyperliquid', ?, ?, ?, ?, ?, ?, ?)
+            """, r["symbol"], r["funding"], r["open_interest"], r["oi_usd"], r["mark_px"],
+                 r["premium"], r["day_volume_usd"], r["max_leverage"])
+
+
+def insert_options_snapshot(rows: list):
+    with get_connection() as conn:
+        cur = conn.cursor()
+        for r in rows:
+            cur.execute("""
+                INSERT INTO options_snapshot
+                    (currency, call_oi, put_oi, put_call_ratio, oi_usd, dvol, underlying_px)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            """, r["currency"], r["call_oi"], r["put_oi"], r["put_call_ratio"],
+                 r["oi_usd"], r["dvol"], r["underlying_px"])
+
+
+def get_futures_latest() -> pd.DataFrame:
+    """Latest snapshot per symbol plus the snapshot closest to 24h earlier."""
+    with get_connection() as conn:
+        return pd.read_sql("""
+            WITH latest AS (
+                SELECT *, ROW_NUMBER() OVER (PARTITION BY symbol ORDER BY ts DESC) rn
+                FROM futures_snapshot
+            ),
+            prev AS (
+                SELECT symbol, oi_usd, funding,
+                       ROW_NUMBER() OVER (PARTITION BY symbol ORDER BY ts DESC) rn
+                FROM futures_snapshot
+                WHERE ts <= DATEADD(hour, -23, GETUTCDATE())
+            )
+            SELECT l.symbol, l.ts, l.funding, l.open_interest, l.oi_usd, l.mark_px,
+                   l.premium, l.day_volume_usd, l.max_leverage,
+                   p.oi_usd AS oi_usd_24h_ago, p.funding AS funding_24h_ago
+            FROM latest l LEFT JOIN prev p ON p.symbol = l.symbol AND p.rn = 1
+            WHERE l.rn = 1
+        """, conn)
+
+
+def get_options_latest() -> pd.DataFrame:
+    with get_connection() as conn:
+        return pd.read_sql("""
+            WITH x AS (
+                SELECT *, ROW_NUMBER() OVER (PARTITION BY currency ORDER BY ts DESC) rn
+                FROM options_snapshot
+            )
+            SELECT currency, ts, call_oi, put_oi, put_call_ratio, oi_usd, dvol, underlying_px
+            FROM x WHERE rn = 1
+        """, conn)

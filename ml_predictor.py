@@ -18,12 +18,17 @@ import database as db
 from config import (
     CRYPTO_ASSETS, PREDICTION_HORIZONS, MODEL_DIR, MIN_TRAINING_ROWS
 )
+try:
+    from config import FEATURE_SETS
+except ImportError:
+    FEATURE_SETS = {}
+import time as _time
 
 os.makedirs(MODEL_DIR, exist_ok=True)
 
 TARGETS = ["price_usd", "volume_24h", "market_cap"]
 
-MODEL_VERSION = 2   # v2: daily resampling + %-change targets + baseline evaluation
+MODEL_VERSION = 3   # v3: + market context inputs (BTC, Fear & Greed, perp funding)
 
 # Lookback windows (in DAYS — data is resampled to one row per day first)
 RET_LAGS = [1, 2, 3, 5, 7, 14, 21, 30]
@@ -59,7 +64,73 @@ def _to_daily(df: pd.DataFrame) -> pd.DataFrame:
 # Step 2 — scale-free features, %-change targets
 # ---------------------------------------------------------------------------
 
-def _features(daily: pd.DataFrame) -> pd.DataFrame:
+# ---------------------------------------------------------------------------
+# Market-context inputs (BTC, Fear & Greed, perp funding) — one row per day
+# ---------------------------------------------------------------------------
+
+_ctx_cache = {}
+
+
+def _cached(key, loader, ttl=600):
+    hit = _ctx_cache.get(key)
+    if hit and _time.time() - hit[0] < ttl:
+        return hit[1]
+    val = loader()
+    _ctx_cache[key] = (_time.time(), val)
+    return val
+
+
+def _enabled_sets(feature_sets=None) -> list:
+    fs = FEATURE_SETS if feature_sets is None else feature_sets
+    if isinstance(fs, dict):
+        return sorted(k for k, v in fs.items() if v)
+    return sorted(fs)
+
+
+def _context(symbol: str, days: int, sets: list) -> pd.DataFrame:
+    parts = []
+    if "btc" in sets and symbol != "BTC":
+        btc = _cached(("btc", days), lambda: _to_daily(db.get_price_history("BTC", days=days)))
+        if not btc.empty:
+            p = btc["price_usd"]
+            r1 = p.pct_change(1, fill_method=None)
+            b = pd.DataFrame(index=btc.index)
+            for k in (1, 3, 7, 14, 30):
+                b[f"btc_ret_{k}d"] = p.pct_change(k, fill_method=None)
+            b["btc_vol_14d"] = r1.rolling(14).std()
+            b["btc_px_vs_ma30"] = p / p.rolling(30).mean() - 1
+            parts.append(b)
+    if "fng" in sets:
+        fg = _cached(("fng", days), lambda: db.get_fear_greed(days=days + 40))
+        if fg is not None and not fg.empty:
+            g = fg.copy()
+            g["date"] = pd.to_datetime(g["date"])
+            v = g.set_index("date").sort_index()["value"].astype(float).asfreq("D").ffill(limit=3)
+            parts.append(pd.DataFrame({
+                "fng": v,
+                "fng_chg_7d": v - v.shift(7),
+                "fng_vs_ma30": v - v.rolling(30).mean(),
+            }))
+    if "funding" in sets:
+        fd = _cached(("funding", symbol, days), lambda: db.get_funding_daily(symbol, days=days + 40))
+        if fd is not None and not fd.empty:
+            d = fd.copy()
+            d["date"] = pd.to_datetime(d["date"])
+            d = d.set_index("date").sort_index().asfreq("D")
+            f1 = d["funding_avg"] * 24 * 365          # annualised rate
+            parts.append(pd.DataFrame({
+                "fund_1d": f1,
+                "fund_3d": f1.rolling(3, min_periods=1).mean(),
+                "fund_7d": f1.rolling(7, min_periods=1).mean(),
+                "fund_z30": (f1 - f1.rolling(30, min_periods=10).mean()) / f1.rolling(30, min_periods=10).std(),
+                "prem_1d": d["premium_avg"],
+            }))
+    if not parts:
+        return pd.DataFrame()
+    return pd.concat(parts, axis=1)
+
+
+def _features(daily: pd.DataFrame, ctx: pd.DataFrame = None) -> pd.DataFrame:
     """Build scale-free features (returns, volatility, distance from averages)
     so the model generalises to price levels it has never seen."""
     f = pd.DataFrame(index=daily.index)
@@ -88,10 +159,18 @@ def _features(daily: pd.DataFrame) -> pd.DataFrame:
 
     f["day_of_week"] = f.index.dayofweek
     f["month"] = f.index.month
+
+    if ctx is not None and not ctx.empty:
+        c = ctx.reindex(f.index).ffill(limit=3)
+        f = f.join(c)
+        if "btc_ret_7d" in f:
+            f["rel_ret_7d"] = f["ret_7d"] - f["btc_ret_7d"]
+            f["rel_ret_30d"] = f["ret_30d"] - f["btc_ret_30d"]
     return f.replace([np.inf, -np.inf], np.nan)
 
 
-def _build_features(df: pd.DataFrame, target_col: str, horizon: int) -> tuple:
+def _build_features(df: pd.DataFrame, target_col: str, horizon: int,
+                    ctx: pd.DataFrame = None) -> tuple:
     """
     Returns (X, y, feature_names) where y is the % change of target_col
     `horizon` DAYS ahead.  (None, None, None) if not enough data.
@@ -99,7 +178,7 @@ def _build_features(df: pd.DataFrame, target_col: str, horizon: int) -> tuple:
     daily = _to_daily(df)
     if daily.empty or target_col not in daily or daily[target_col].notna().sum() < MIN_TRAINING_ROWS + horizon:
         return None, None, None
-    f = _features(daily)
+    f = _features(daily, ctx)
     tgt = daily[target_col]
     f["target"] = tgt.shift(-horizon) / tgt - 1
     f = f.replace([np.inf, -np.inf], np.nan)
@@ -131,46 +210,50 @@ def _new_model():
     )
 
 
-def train_model(symbol: str, target: str, horizon: int) -> dict:
+def _cv_eval(X, y, horizon: int) -> dict:
+    """Walk-forward CV (gap=horizon) — every number here is out-of-sample."""
+    tscv = TimeSeriesSplit(n_splits=4, gap=horizon)
+    P, A = [], []
+    for tr, va in tscv.split(X):
+        m = _new_model()
+        m.fit(X[tr], y[tr])
+        P.append(m.predict(X[va]))
+        A.append(y[va])
+    p, a = np.concatenate(P), np.concatenate(A)
+    mae = float(mean_absolute_error(a, p))
+    base = float(np.mean(np.abs(a)))
+    nz = a != 0
+    return {
+        "mae": mae,
+        "rmse": float(np.sqrt(mean_squared_error(a, p))),
+        "baseline_mae": base,
+        "skill": float(1 - mae / base) if base > 0 else 0.0,
+        "directional": float(np.mean(np.sign(p[nz]) == np.sign(a[nz])) * 100) if nz.any() else 50.0,
+        "up_share": float(np.mean(a[nz] > 0) * 100) if nz.any() else 50.0,
+        "r2": float(r2_score(a, p)),
+    }
+
+
+def train_model(symbol: str, target: str, horizon: int, feature_sets=None) -> dict:
     """
-    Train a model that predicts the % change of `target` over `horizon` days.
-    Metrics are all OUT-OF-SAMPLE (walk-forward CV) and compared with the
-    naive "no change" forecast:
-        mae           – model mean abs error of the % change (e.g. 0.031 = 3.1%)
-        baseline_mae  – same for always predicting 0% change
-        skill_score   – 1 - mae/baseline_mae  (>0 = beats no-change)
-        directional   – % of validation days the predicted direction was right
+    Train a model that predicts the % change of `target` over `horizon` days,
+    using the coin's own history plus the enabled market-context inputs.
+    Metrics are out-of-sample and compared with the "no change" forecast.
     """
-    print(f"[ML] Training {symbol} | {target} | {horizon}d horizon...")
+    sets = _enabled_sets(feature_sets)
+    print(f"[ML] Training {symbol} | {target} | {horizon}d | inputs={sets or ['base']}...")
     df = db.get_price_history(symbol, days=730)
     if df.empty:
         print(f"[ML] No data for {symbol}")
         return {}
 
-    X, y, feat_cols = _build_features(df, target, horizon)
+    ctx = _context(symbol, 730, sets)
+    X, y, feat_cols = _build_features(df, target, horizon, ctx)
     if X is None:
         print(f"[ML] Not enough daily data for {symbol}/{target}/{horizon}d")
         return {}
 
-    tscv = TimeSeriesSplit(n_splits=4, gap=horizon)   # gap avoids overlap leakage
-    preds_all, actual_all = [], []
-    for train_idx, val_idx in tscv.split(X):
-        gb = _new_model()
-        gb.fit(X[train_idx], y[train_idx])
-        preds_all.append(gb.predict(X[val_idx]))
-        actual_all.append(y[val_idx])
-    p = np.concatenate(preds_all)
-    a = np.concatenate(actual_all)
-
-    mae = float(mean_absolute_error(a, p))
-    rmse = float(np.sqrt(mean_squared_error(a, p)))
-    baseline_mae = float(np.mean(np.abs(a)))
-    skill = float(1 - mae / baseline_mae) if baseline_mae > 0 else 0.0
-    nz = a != 0
-    directional = float(np.mean(np.sign(p[nz]) == np.sign(a[nz])) * 100) if nz.any() else 50.0
-    up_share = float(np.mean(a[nz] > 0) * 100) if nz.any() else 50.0
-    oos_r2 = float(r2_score(a, p))
-
+    ev = _cv_eval(X, y, horizon)
     gb = _new_model()
     gb.fit(X, y)
 
@@ -179,10 +262,11 @@ def train_model(symbol: str, target: str, horizon: int) -> dict:
         "version": MODEL_VERSION,
         "model": gb,
         "feat_cols": feat_cols,
+        "feature_sets": sets,
         "symbol": symbol,
         "target": target,
         "horizon": horizon,
-        "mae_pct": mae,
+        "mae_pct": ev["mae"],
         "trained_at": datetime.utcnow().isoformat(),
     }, model_path)
 
@@ -198,16 +282,45 @@ def train_model(symbol: str, target: str, horizon: int) -> dict:
                  training_rows, is_active, baseline_mae, skill_score,
                  directional_acc, up_share, model_version)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?)
-        """, symbol, target, horizon, model_path, mae, rmse, oos_r2, len(y),
-             baseline_mae, skill, directional, up_share, MODEL_VERSION)
+        """, symbol, target, horizon, model_path, ev["mae"], ev["rmse"], ev["r2"], len(y),
+             ev["baseline_mae"], ev["skill"], ev["directional"], ev["up_share"], MODEL_VERSION)
 
-    print(f"[ML] {symbol}/{target}/{horizon}d | MAE={mae*100:.2f}% vs no-change {baseline_mae*100:.2f}% "
-          f"| skill={skill*100:+.1f}% | dir={directional:.1f}% (up-days {up_share:.0f}%) | rows={len(y)}")
-    return {
-        "symbol": symbol, "target": target, "horizon": horizon,
-        "mae": mae, "baseline_mae": baseline_mae, "skill": skill,
-        "directional": directional, "rows": len(y), "model_path": model_path,
-    }
+    print(f"[ML] {symbol}/{target}/{horizon}d | MAE={ev['mae']*100:.2f}% vs no-change "
+          f"{ev['baseline_mae']*100:.2f}% | skill={ev['skill']*100:+.1f}% | dir={ev['directional']:.1f}%")
+    return {"symbol": symbol, "target": target, "horizon": horizon, "rows": len(y),
+            "model_path": model_path, **ev}
+
+
+ABLATION_CONFIGS = {
+    "base":     [],
+    "+btc":     ["btc"],
+    "+fng":     ["fng"],
+    "+funding": ["funding"],
+    "all":      ["btc", "fng", "funding"],
+}
+
+
+def ablation_report(target: str = "price_usd") -> pd.DataFrame:
+    """Out-of-sample skill/direction for each input set, per coin and horizon.
+    Nothing is saved — this only measures which inputs help."""
+    rows = []
+    for symbol in CRYPTO_ASSETS:
+        df = db.get_price_history(symbol, days=730)
+        if df.empty:
+            continue
+        for name, sets in ABLATION_CONFIGS.items():
+            ctx = _context(symbol, 730, sets)
+            for h in PREDICTION_HORIZONS:
+                X, y, _ = _build_features(df, target, h, ctx)
+                if X is None:
+                    continue
+                ev = _cv_eval(X, y, h)
+                rows.append({"symbol": symbol, "horizon": h, "inputs": name,
+                             "skill": round(ev["skill"] * 100, 2),
+                             "directional": round(ev["directional"], 1),
+                             "mae_pct": round(ev["mae"] * 100, 2),
+                             "baseline_pct": round(ev["baseline_mae"] * 100, 2)})
+    return pd.DataFrame(rows)
 
 
 def model_is_current(symbol: str, target: str, horizon: int) -> bool:
@@ -216,7 +329,9 @@ def model_is_current(symbol: str, target: str, horizon: int) -> bool:
     if not os.path.exists(path):
         return False
     try:
-        return joblib.load(path).get("version") == MODEL_VERSION
+        meta = joblib.load(path)
+        return (meta.get("version") == MODEL_VERSION
+                and meta.get("feature_sets", []) == _enabled_sets())
     except Exception:
         return False
 
@@ -271,8 +386,9 @@ def predict(symbol: str, target: str, horizon: int) -> dict:
         return None
     current = float(current.iloc[-1])
 
-    f = _features(daily)
-    row = f[meta["feat_cols"]].iloc[-1]
+    ctx = _context(symbol, 120, meta.get("feature_sets", []))
+    f = _features(daily, ctx).reindex(columns=meta["feat_cols"])
+    row = f.iloc[-1]
     if row.isnull().all():
         return None
     pct = float(meta["model"].predict(row.fillna(0).values.reshape(1, -1))[0])

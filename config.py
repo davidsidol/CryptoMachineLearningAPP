@@ -41,6 +41,12 @@ CRYPTO_ASSETS = {
     "XMR":  {"name": "Monero",     "cmc_id": 328,   "coinbase_id": None,        "color": "#FF6600"},
 }
 
+# Extra model inputs (each can be switched off independently; retrain after changing)
+#   btc     – BTC returns / volatility / trend as inputs for the other coins
+#   fng     – Crypto Fear & Greed Index level and changes
+#   funding – Hyperliquid perp funding rate (daily average, 3/7-day means, z-score)
+FEATURE_SETS = {"btc": True, "fng": True, "funding": True}
+
 # ML Configuration
 PREDICTION_HORIZONS = [1, 3, 7]    # days (1=24hr, 3=3-day, 7=7-day)
 MODEL_DIR = "models"
