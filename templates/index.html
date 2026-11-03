@@ -397,10 +397,17 @@ body { font-family: 'Inter', 'Segoe UI', system-ui, sans-serif; position: relati
             {% for f in mk.futures %}
               <tr>
                 <td class="mk-coin"><img src="https://s2.coinmarketcap.com/static/img/coins/64x64/{{ f.cmc_id }}.png" alt="" loading="lazy" onerror="this.remove()"/><b style="color:#fff">{{ f.symbol }}</b></td>
-                <td class="text-end" style="font-weight:700;color:{{ '#4ade80' if (f.funding_apr or 0) > 5 else ('#f87171' if (f.funding_apr or 0) < -1 else '#cbd5e1') }}">
-                  {% if f.funding_apr is not none %}{{ '+' if f.funding_apr > 0 else '' }}{{ '%.1f'|format(f.funding_apr) }}%{% else %}–{% endif %}
+                {% set apr = f.funding_apr %}
+                {# Hyperliquid's neutral funding is 0.00125%/h ≈ 10.95% APR #}
+                {% if apr is none %}{% set fb = none %}
+                {% elif apr > 13 %}{% set fb = ('Longs crowded', 'long') %}
+                {% elif apr >= 9 %}{% set fb = ('Neutral (baseline)', 'neutral') %}
+                {% elif apr >= 0 %}{% set fb = ('Below baseline', 'neutral') %}
+                {% else %}{% set fb = ('Shorts paying', 'short') %}{% endif %}
+                <td class="text-end" style="font-weight:700;color:{{ '#4ade80' if (apr or 0) > 13 else ('#f87171' if (apr or 0) < 0 else '#cbd5e1') }}">
+                  {% if apr is not none %}{{ '+' if apr > 0 else '' }}{{ '%.1f'|format(apr) }}%{% else %}–{% endif %}
                 </td>
-                <td>{% if f.bias %}<span class="pill pill-{{ f.bias[1] }}">{{ f.bias[0] }}</span>{% else %}–{% endif %}</td>
+                <td>{% if fb %}<span class="pill pill-{{ fb[1] }}">{{ fb[0] }}</span>{% else %}–{% endif %}</td>
                 <td class="text-end">{% if f.oi_usd %}${{ '{:,.0f}'.format(f.oi_usd / 1e6) }}M{% else %}–{% endif %}</td>
                 <td class="text-end {{ 'positive' if (f.oi_chg_24h or 0) >= 0 else 'negative' }}">
                   {% if f.oi_chg_24h is not none %}{{ '+' if f.oi_chg_24h >= 0 else '' }}{{ '%.1f'|format(f.oi_chg_24h) }}%{% else %}<span style="color:#64748b">collecting…</span>{% endif %}
@@ -418,7 +425,7 @@ body { font-family: 'Inter', 'Segoe UI', system-ui, sans-serif; position: relati
           </table>
         </div>
         <div class="mk-sub mt-2">
-          Positive funding = longs pay shorts (crowded long); negative = shorts pay longs. Direction read compares the 24h change in open interest with price:
+          Hyperliquid's neutral funding is ≈11% APR — well above it means longs are crowded and paying up; negative means shorts are paying longs. Direction read compares the 24h change in open interest with price:
           rising OI + rising price = new longs, rising OI + falling price = new shorts.
         </div>
       </div>

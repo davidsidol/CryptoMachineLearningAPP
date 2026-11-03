@@ -178,7 +178,11 @@ def _market_context_summary(prices: dict) -> dict:
             px_chg = p.get("pct_24h")
             bias = None
             if apr is not None:
-                bias = ("Longs paying", "long") if apr > 5 else (("Shorts paying", "short") if apr < -1 else ("Balanced", "neutral"))
+                # Hyperliquid's neutral funding ≈ 10.95% APR (0.00125%/h)
+                bias = (("Longs crowded", "long") if apr > 13 else
+                        ("Neutral (baseline)", "neutral") if apr >= 9 else
+                        ("Below baseline", "neutral") if apr >= 0 else
+                        ("Shorts paying", "short"))
             out["futures"].append({
                 "symbol": sym,
                 "name": CRYPTO_ASSETS[sym]["name"],
