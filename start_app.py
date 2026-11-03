@@ -122,4 +122,10 @@ if __name__ == "__main__":
     print(f"[STARTUP] Flask binding on port {FLASK_PORT} — initialisation running in background…")
     print(f"[STARTUP] Open http://localhost:{FLASK_PORT} — a loading banner will show until ready.\n")
 
-    app.run(host="0.0.0.0", port=FLASK_PORT, debug=False, use_reloader=False)
+    try:
+        from waitress import serve
+        print(f"[STARTUP] Serving with Waitress on 0.0.0.0:{FLASK_PORT}")
+        serve(app, host="0.0.0.0", port=FLASK_PORT, threads=8)
+    except ImportError:
+        print("[STARTUP] Waitress not installed — falling back to the Flask dev server")
+        app.run(host="0.0.0.0", port=FLASK_PORT, debug=False, use_reloader=False)
