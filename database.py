@@ -383,15 +383,16 @@ def get_unevaluated_predictions() -> pd.DataFrame:
             WITH latest AS (
                 SELECT symbol, target, horizon_days,
                        CAST(predicted_for AS DATE) AS predicted_for,
-                       predicted_value,
+                       predicted_value, generated_at,
                        ROW_NUMBER() OVER (
                            PARTITION BY symbol, target, horizon_days, CAST(predicted_for AS DATE)
                            ORDER BY generated_at DESC
                        ) AS rn
                 FROM predictions
-                WHERE CAST(predicted_for AS DATE) <= CAST(GETUTCDATE() AS DATE)
+                -- only once the whole target day is over (forecasts target the day's close)
+                WHERE CAST(predicted_for AS DATE) < CAST(GETUTCDATE() AS DATE)
             )
-            SELECT l.symbol, l.target, l.horizon_days, l.predicted_for, l.predicted_value
+            SELECT l.symbol, l.target, l.horizon_days, l.predicted_for, l.predicted_value, l.generated_at
             FROM latest l
             WHERE l.rn = 1
               AND NOT EXISTS (
@@ -565,3 +566,11 @@ def get_options_latest() -> pd.DataFrame:
             SELECT currency, ts, call_oi, put_oi, put_call_ratio, oi_usd, dvol, underlying_px
             FROM x WHERE rn = 1
         """, conn)
+
+
+def delete_outcomes_since(day) -> int:
+    """Remove scored outcomes from `day` on (used to re-score with corrected logic)."""
+    with get_connection() as conn:
+        cur = conn.cursor()
+        cur.execute("DELETE FROM prediction_outcomes WHERE predicted_for >= ?", day)
+        return cur.rowcount

@@ -255,16 +255,26 @@ def fetch_coingecko_history(symbol: str, days: int = 365):
 
     print(f"[CG] Fetching {days}d history for {symbol} from CoinGecko...")
 
-    try:
-        resp = requests.get(
-            f"{COINGECKO_URL}/coins/{cg_id}/market_chart",
-            params={"vs_currency": "usd", "days": days, "interval": "daily"},
-            timeout=30,
-        )
-        resp.raise_for_status()
-        data = resp.json()
-    except Exception as e:
-        print(f"[CG] Error for {symbol}: {e}")
+    data = None
+    for attempt in range(3):
+        try:
+            resp = requests.get(
+                f"{COINGECKO_URL}/coins/{cg_id}/market_chart",
+                params={"vs_currency": "usd", "days": days, "interval": "daily"},
+                timeout=30,
+            )
+            if resp.status_code == 429 and attempt < 2:
+                wait = int(resp.headers.get("Retry-After", 0) or 0) or 20 * (attempt + 1)
+                print(f"[CG] {symbol}: rate limited, retrying in {wait}s...")
+                time.sleep(min(wait, 60))
+                continue
+            resp.raise_for_status()
+            data = resp.json()
+            break
+        except Exception as e:
+            print(f"[CG] Error for {symbol}: {e}")
+            return 0
+    if data is None:
         return 0
 
     prices     = {int(p[0]): p[1] for p in data.get("prices", [])}
@@ -542,7 +552,7 @@ def refresh_all():
         fetch_coinbase_candles(symbol, days=2)  # last 2 days
         sync_ohlcv_to_prices(symbol)
         fetch_coingecko_history(symbol, days=3)
-        time.sleep(1)
+        time.sleep(4)   # CoinGecko free tier: stay well under its per-minute limit
 
 
 if __name__ == "__main__":

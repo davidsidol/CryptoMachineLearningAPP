@@ -522,32 +522,28 @@ def evaluate_past_predictions() -> int:
         if not col:
             continue
 
-        # Actual value on the prediction date
-        actual_row = hist[hist["date"] == pred_date]
-        if actual_row.empty or actual_row.iloc[0][col] is None:
+        # Forecasts target the CLOSE of the predicted day (that is what the models
+        # are trained on), so use the last observation of that day...
+        day_rows = hist[hist["date"] == pred_date].sort_values("timestamp")
+        if day_rows.empty or pd.isna(day_rows.iloc[-1][col]):
             continue
-        actual_val = float(actual_row.iloc[0][col])
+        actual_val = float(day_rows.iloc[-1][col])
         if actual_val == 0:
             continue
 
         abs_err = abs(pred_val - actual_val)
         pct_err = (pred_val - actual_val) / actual_val * 100
 
-        # Direction: was the prediction trending the right way vs the base price?
-        from datetime import timedelta
-        base_date = pred_date - timedelta(days=horizon)
-        base_row  = hist[hist["date"] == base_date]
-        if base_row.empty:
-            # Use the nearest earlier date
-            earlier = hist[hist["date"] < pred_date]
-            base_row = earlier.tail(horizon + 1).head(1)
-
-        if not base_row.empty and base_row.iloc[0][col] is not None:
-            base_val = float(base_row.iloc[0][col])
-            if base_val > 0:
-                direction_correct = (pred_val > base_val) == (actual_val > base_val)
-            else:
-                direction_correct = False
+        # ...and judge direction from the value at the moment the forecast was made.
+        gen_at = pd.Timestamp(row["generated_at"]) if "generated_at" in row and pd.notna(row["generated_at"]) else None
+        ts = pd.to_datetime(hist["timestamp"])
+        if gen_at is not None:
+            base_rows = hist[ts <= gen_at].sort_values("timestamp")
+        else:
+            base_rows = hist[hist["date"] < pred_date].sort_values("timestamp").tail(1)
+        if not base_rows.empty and pd.notna(base_rows.iloc[-1][col]) and float(base_rows.iloc[-1][col]) > 0:
+            base_val = float(base_rows.iloc[-1][col])
+            direction_correct = (pred_val > base_val) == (actual_val > base_val)
         else:
             direction_correct = False
 
