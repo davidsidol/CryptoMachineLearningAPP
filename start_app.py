@@ -105,6 +105,8 @@ def _weekly_retrain_loop():
         if not startup_state["done"]:
             continue
         try:
+            if ml.pooled_age_days() >= 7:
+                dc.ensure_funding_history()      # finish any funding backfill first
             if ml.retrain_if_stale(7):
                 ml.predict_all()
         except Exception as e:

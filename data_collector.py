@@ -418,14 +418,23 @@ def fetch_funding_history(symbol: str, days: int = 3) -> int:
     rows = []
     try:
         while True:
-            page = _hl({"type": "fundingHistory", "coin": symbol, "startTime": start})
+            page = None
+            for attempt in range(5):
+                try:
+                    page = _hl({"type": "fundingHistory", "coin": symbol, "startTime": start})
+                    break
+                except requests.HTTPError as he:
+                    if he.response is not None and he.response.status_code == 429 and attempt < 4:
+                        time.sleep(15 * (attempt + 1))      # rate limited: back off and retry
+                        continue
+                    raise
             if not page:
                 break
             rows.extend(page)
             if len(page) < 500:
                 break
             start = int(page[-1]["time"]) + 1
-            time.sleep(0.4)
+            time.sleep(0.7)
     except Exception as e:
         print(f"[HL] Funding history failed for {symbol}: {e}")
         db.log_collection("hl_funding", symbol, 0, "error", str(e)[:500])
@@ -453,15 +462,17 @@ def fetch_funding_history(symbol: str, days: int = 3) -> int:
 
 def ensure_funding_history(days: int = 730):
     """Backfill daily funding. The pooled model trains on full history, so pull
-    everything Hyperliquid has (back to 2023) once."""
-    try:
-        full = db.get_funding_count("BTC") >= 1000
-    except Exception:
-        full = False
+    everything Hyperliquid has (back to 2023) once per coin; a marker file
+    records each coin whose full backfill succeeded."""
+    import os
+    from config import MODEL_DIR
     for symbol in CRYPTO_ASSETS:
         try:
-            if not full:
-                fetch_funding_history(symbol, days=4000)
+            marker = os.path.join(MODEL_DIR, f"funding_full_{symbol}.done")
+            if not os.path.exists(marker):
+                if fetch_funding_history(symbol, days=4000) > 0:
+                    open(marker, "w").write(datetime.now(timezone.utc).isoformat())
+                time.sleep(2)
             elif db.get_funding_count(symbol) < 30:
                 fetch_funding_history(symbol, days=days)
         except Exception as e:
