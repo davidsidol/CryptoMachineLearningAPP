@@ -232,6 +232,20 @@ def setup_database():
             )
         """)
 
+        # Clean daily candles (one consistent UTC close per day, single source per coin)
+        cursor.execute("""
+            IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='daily_candles' AND xtype='U')
+            CREATE TABLE daily_candles (
+                symbol      NVARCHAR(10) NOT NULL,
+                [date]      DATE         NOT NULL,
+                [open]      FLOAT, [high] FLOAT, [low] FLOAT,
+                [close]     FLOAT        NOT NULL,
+                volume_usd  FLOAT,
+                source      NVARCHAR(20),
+                CONSTRAINT PK_daily_candles PRIMARY KEY (symbol, [date])
+            )
+        """)
+
         print("[DB] All tables created/verified.")
 
 
@@ -620,3 +634,62 @@ def score_shadow(row_id, actual_close, correct):
             UPDATE direction_shadow SET actual_close = ?, correct = ?, scored_at = GETUTCDATE()
             WHERE id = ?
         """, actual_close, correct, row_id)
+
+
+# ---------------------------------------------------------------------------
+# Clean daily candles (training data for the pooled price model)
+# ---------------------------------------------------------------------------
+
+def upsert_daily_candles(rows: list) -> int:
+    """rows: dicts with symbol, date, open, high, low, close, volume_usd, source. One connection."""
+    if not rows:
+        return 0
+    with get_connection() as conn:
+        cur = conn.cursor()
+        for r in rows:
+            cur.execute("""
+                MERGE daily_candles AS t
+                USING (SELECT ? AS s, ? AS d) AS k ON t.symbol = k.s AND t.[date] = k.d
+                WHEN MATCHED THEN UPDATE SET [open] = ?, [high] = ?, [low] = ?, [close] = ?, volume_usd = ?, source = ?
+                WHEN NOT MATCHED THEN INSERT (symbol, [date], [open], [high], [low], [close], volume_usd, source)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?);
+            """, r["symbol"], r["date"],
+                 r["open"], r["high"], r["low"], r["close"], r["volume_usd"], r["source"],
+                 r["symbol"], r["date"], r["open"], r["high"], r["low"], r["close"], r["volume_usd"], r["source"])
+    return len(rows)
+
+
+def get_daily_candle_count(symbol: str) -> int:
+    with get_connection() as conn:
+        return conn.cursor().execute(
+            "SELECT COUNT(*) FROM daily_candles WHERE symbol = ?", symbol).fetchone()[0]
+
+
+def get_daily_candles() -> pd.DataFrame:
+    with get_connection() as conn:
+        return pd.read_sql("""
+            SELECT symbol, [date], [open], [high], [low], [close], volume_usd
+            FROM daily_candles ORDER BY symbol, [date]
+        """, conn)
+
+
+def get_all_funding_daily() -> pd.DataFrame:
+    with get_connection() as conn:
+        return pd.read_sql("SELECT symbol, [date], funding_avg FROM funding_daily", conn)
+
+
+def upsert_funding_daily_many(rows: list) -> int:
+    """rows: (symbol, date, funding_avg, premium_avg, samples). One connection."""
+    if not rows:
+        return 0
+    with get_connection() as conn:
+        cur = conn.cursor()
+        for (sym, d, f, pr, n) in rows:
+            cur.execute("""
+                MERGE funding_daily AS t
+                USING (SELECT ? AS s, ? AS d) AS k ON t.symbol = k.s AND t.[date] = k.d
+                WHEN MATCHED THEN UPDATE SET funding_avg = ?, premium_avg = ?, samples = ?
+                WHEN NOT MATCHED THEN INSERT (symbol, [date], funding_avg, premium_avg, samples)
+                     VALUES (?, ?, ?, ?, ?);
+            """, sym, d, f, pr, n, sym, d, f, pr, n)
+    return len(rows)

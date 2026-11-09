@@ -440,23 +440,29 @@ def fetch_funding_history(symbol: str, days: int = 3) -> int:
         agg[0] += f; agg[2] += 1
         if p is not None:
             agg[1] += float(p); agg[3] += 1
-    n = 0
-    for d, (fs, ps, fc, pc) in by_day.items():
-        try:
-            db.upsert_funding_daily(symbol, d, fs / fc, (ps / pc) if pc else None, fc)
-            n += 1
-        except Exception as e:
-            print(f"[HL] DB error {symbol} {d}: {e}")
+    try:
+        n = db.upsert_funding_daily_many(
+            [(symbol, d, fs / fc, (ps / pc) if pc else None, fc) for d, (fs, ps, fc, pc) in by_day.items()])
+    except Exception as e:
+        print(f"[HL] DB error {symbol}: {e}")
+        n = 0
     db.log_collection("hl_funding", symbol, n, "success")
     print(f"[HL] {symbol}: {n} daily funding rows upserted ({len(rows)} hourly samples).")
     return n
 
 
 def ensure_funding_history(days: int = 730):
-    """Backfill ~2 years of daily funding for any symbol that has little history."""
+    """Backfill daily funding. The pooled model trains on full history, so pull
+    everything Hyperliquid has (back to 2023) once."""
+    try:
+        full = db.get_funding_count("BTC") >= 1000
+    except Exception:
+        full = False
     for symbol in CRYPTO_ASSETS:
         try:
-            if db.get_funding_count(symbol) < 30:
+            if not full:
+                fetch_funding_history(symbol, days=4000)
+            elif db.get_funding_count(symbol) < 30:
                 fetch_funding_history(symbol, days=days)
         except Exception as e:
             print(f"[HL] Backfill error {symbol}: {e}")
@@ -539,6 +545,89 @@ def refresh_market_context():
         time.sleep(0.3)
 
 
+# ---------------------------------------------------------------------------
+# Clean daily candles — one completed UTC day per row, one source per coin
+#   Coinbase Exchange for coins listed there, Hyperliquid perps otherwise.
+# ---------------------------------------------------------------------------
+
+def _today_utc():
+    return datetime.now(timezone.utc).date()
+
+
+def fetch_daily_candles(symbol: str, days: int = 5) -> int:
+    """Fetch completed daily candles for the last `days` days and upsert them."""
+    product = CRYPTO_ASSETS[symbol].get("coinbase_id")
+    today = _today_utc()
+    rows = []
+    try:
+        if product:
+            end = datetime.now(timezone.utc)
+            start = end - timedelta(days=days)
+            s = start
+            while s < end:
+                e = min(s + timedelta(days=299), end)
+                resp = None
+                for attempt in range(4):
+                    resp = requests.get(f"{COINBASE_PUBLIC_URL}/products/{product}/candles",
+                                        params={"granularity": 86400, "start": s.isoformat(), "end": e.isoformat()},
+                                        timeout=30)
+                    if resp.status_code == 200:
+                        break
+                    time.sleep(2 + attempt * 3)
+                resp.raise_for_status()
+                for t, lo, hi, op, cl, vol in resp.json():
+                    d = datetime.fromtimestamp(int(t), tz=timezone.utc).date()
+                    if d < today:
+                        rows.append({"symbol": symbol, "date": d, "open": float(op), "high": float(hi),
+                                     "low": float(lo), "close": float(cl),
+                                     "volume_usd": float(vol) * float(cl), "source": "coinbase"})
+                s = e + timedelta(days=1)
+                time.sleep(0.25)
+        else:
+            start_ms = int((datetime.now(timezone.utc) - timedelta(days=days)).timestamp() * 1000)
+            data = _hl({"type": "candleSnapshot", "req": {"coin": symbol, "interval": "1d",
+                                                           "startTime": start_ms,
+                                                           "endTime": int(time.time() * 1000)}})
+            for c in data:
+                d = datetime.fromtimestamp(int(c["t"]) / 1000, tz=timezone.utc).date()
+                if d < today:
+                    cl = float(c["c"])
+                    rows.append({"symbol": symbol, "date": d, "open": float(c["o"]), "high": float(c["h"]),
+                                 "low": float(c["l"]), "close": cl,
+                                 "volume_usd": float(c["v"]) * cl, "source": "hyperliquid"})
+    except Exception as e:
+        print(f"[DAILY] Fetch failed for {symbol}: {e}")
+        db.log_collection("daily_candles", symbol, 0, "error", str(e)[:500])
+        return 0
+    seen = {}
+    for r in rows:
+        seen[r["date"]] = r
+    n = db.upsert_daily_candles(list(seen.values()))
+    if days > 30:
+        db.log_collection("daily_candles", symbol, n, "success")
+        print(f"[DAILY] {symbol}: {n} daily candles upserted.")
+    return n
+
+
+def ensure_daily_history():
+    """One-time backfill of the full daily history (Coinbase back to 2017 where listed)."""
+    for symbol in CRYPTO_ASSETS:
+        try:
+            if db.get_daily_candle_count(symbol) < 300:
+                fetch_daily_candles(symbol, days=3700)
+        except Exception as e:
+            print(f"[DAILY] Backfill error {symbol}: {e}")
+
+
+def refresh_daily_candles():
+    """Pull the last few completed days for every coin (cheap; called hourly)."""
+    n = 0
+    for symbol in CRYPTO_ASSETS:
+        n += fetch_daily_candles(symbol, days=5)
+        time.sleep(0.2)
+    return n
+
+
 def refresh_all():
     """Pull latest quotes (called by scheduler)."""
     print("[REFRESH] Fetching latest quotes...")
@@ -548,6 +637,10 @@ def refresh_all():
     except Exception as e:
         print(f"[REFRESH] Market context error: {e}")
     fetch_latest_quotes()
+    try:
+        refresh_daily_candles()
+    except Exception as e:
+        print(f"[REFRESH] Daily candles error: {e}")
     for symbol in CRYPTO_ASSETS:
         fetch_coinbase_candles(symbol, days=2)  # last 2 days
         sync_ohlcv_to_prices(symbol)

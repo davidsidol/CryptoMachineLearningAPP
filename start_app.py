@@ -34,19 +34,21 @@ def _run_startup():
         dc.ensure_fear_greed_history()
         startup_state["stage"] = "Loading futures funding history…"
         dc.ensure_funding_history()
+        startup_state["stage"] = "Loading full daily price history…"
+        dc.ensure_daily_history()
         startup_state["stage"] = "Refreshing latest market data…"
         dc.refresh_all()
 
-        # 3. Train any model that is missing or built by an older MODEL_VERSION
+        # 3. Train any model that is missing or built by an older version
         expected = [(sym, tgt, h) for sym in CRYPTO_ASSETS
-                    for tgt in ml.TARGETS for h in ml.PREDICTION_HORIZONS]
+                    for tgt in ml.PER_COIN_TARGETS for h in ml.PREDICTION_HORIZONS]
         missing = [e for e in expected if not ml.model_is_current(*e)]
         if missing:
-            startup_state["stage"] = f"Training {len(missing)} ML models (v{ml.MODEL_VERSION})…"
+            startup_state["stage"] = f"Training {len(missing)} volume / market-cap models…"
             ml.train_all(only_missing=True)
-        else:
-            startup_state["stage"] = "ML models up to date — skipping retrain…"
-            time.sleep(1)
+        if not all(ml.pooled_is_current(h) for h in ml.PREDICTION_HORIZONS):
+            startup_state["stage"] = "Training full-history price model…"
+            ml.train_pooled_all()
 
         # 3b. Hidden up/down test models (trained once, never shown)
         try:
@@ -96,6 +98,19 @@ def _data_refresh_loop():
             print(f"[REFRESH ERROR] {e}")
 
 
+def _weekly_retrain_loop():
+    """Retrain once the models are more than a week old (checked every 6 hours)."""
+    while True:
+        time.sleep(6 * 3600)
+        if not startup_state["done"]:
+            continue
+        try:
+            if ml.retrain_if_stale(7):
+                ml.predict_all()
+        except Exception as e:
+            print(f"[RETRAIN ERROR] {e}")
+
+
 def _prediction_refresh_loop():
     """Regenerate ML predictions every PREDICTION_REFRESH_HOURS."""
     while True:
@@ -104,6 +119,10 @@ def _prediction_refresh_loop():
             continue
         try:
             print("[PREDICT] Regenerating predictions…")
+            try:
+                dc.refresh_daily_candles()
+            except Exception as e:
+                print(f"[PREDICT] Daily candle refresh error: {e}")
             ml.predict_all()
             ml.shadow_predict_all()
         except Exception as e:
@@ -130,6 +149,7 @@ if __name__ == "__main__":
     # Fire periodic refresh threads
     threading.Thread(target=_data_refresh_loop, daemon=True).start()
     threading.Thread(target=_prediction_refresh_loop, daemon=True).start()
+    threading.Thread(target=_weekly_retrain_loop, daemon=True).start()
 
     print(f"[STARTUP] Flask binding on port {FLASK_PORT} — initialisation running in background…")
     print(f"[STARTUP] Open http://localhost:{FLASK_PORT} — a loading banner will show until ready.\n")

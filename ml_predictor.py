@@ -441,6 +441,289 @@ def train_classifier(symbol: str, horizon: int, kind: str = "logit", feature_set
     return {"symbol": symbol, "horizon": horizon, "path": path, **ev}
 
 
+# ===========================================================================
+# Pooled full-history PRICE model (v4)
+#   One model per horizon, trained on every coin's clean daily candles
+#   (single UTC close per day, back to 2017 where available). Targets are
+#   volatility-scaled so coins of different temperament can share a model.
+#   Replaces the 27 per-coin price models; volume / market-cap stay per-coin.
+# ===========================================================================
+
+from sklearn.ensemble import HistGradientBoostingRegressor
+
+POOLED_VERSION = 4
+POOLED_TEST_DAYS = 420          # walk-forward evaluation window
+PER_COIN_TARGETS = [t for t in TARGETS if t != "price_usd"]
+
+
+def _pooled_path(horizon: int) -> str:
+    return os.path.join(MODEL_DIR, f"POOLED_price_usd_{horizon}d.pkl")
+
+
+def _new_pooled_model():
+    return HistGradientBoostingRegressor(
+        loss="absolute_error", max_depth=3, learning_rate=0.03, max_iter=200,
+        min_samples_leaf=40, l2_regularization=1.0, random_state=42,
+    )
+
+
+def _pooled_frame() -> pd.DataFrame:
+    """Feature table for all coins from daily_candles. Includes the latest day
+    (targets NaN) so the same table serves training and prediction."""
+    D = db.get_daily_candles()
+    if D is None or D.empty or "BTC" not in set(D["symbol"]):
+        return pd.DataFrame()
+    D = D.copy()
+    D["date"] = pd.to_datetime(D["date"])
+    px = D.pivot(index="date", columns="symbol", values="close").asfreq("D").ffill(limit=3)
+    vol = D.pivot(index="date", columns="symbol", values="volume_usd").asfreq("D")
+    hi = D.pivot(index="date", columns="symbol", values="high").asfreq("D")
+    lo = D.pivot(index="date", columns="symbol", values="low").asfreq("D")
+
+    try:
+        fg = db.get_fear_greed(days=6000)
+        fg["date"] = pd.to_datetime(fg["date"])
+        fng = fg.set_index("date").sort_index()["value"].astype(float)
+    except Exception:
+        fng = pd.Series(dtype=float)
+    try:
+        fu_all = db.get_all_funding_daily()
+        fu_all["date"] = pd.to_datetime(fu_all["date"])
+    except Exception:
+        fu_all = pd.DataFrame(columns=["symbol", "date", "funding_avg"])
+
+    b = px["BTC"]
+    br = b.pct_change(fill_method=None)
+    frames = []
+    for s in px.columns:
+        p = px[s]
+        r1 = p.pct_change(fill_method=None)
+        f = pd.DataFrame(index=px.index)
+        for k in RET_LAGS:
+            f[f"ret_{k}d"] = p.pct_change(k, fill_method=None)
+        for w in (7, 14, 30):
+            f[f"vol_{w}d"] = r1.rolling(w).std()
+            f[f"px_vs_ma{w}"] = p / p.rolling(w).mean() - 1
+        f["px_vs_high30"] = p / p.rolling(30).max() - 1
+        f["px_vs_low30"] = p / p.rolling(30).min() - 1
+        f["px_vs_high90"] = p / p.rolling(90).max() - 1
+        f["vol_ratio"] = f["vol_7d"] / f["vol_30d"]
+        f["range_7d"] = ((hi[s] - lo[s]) / p).rolling(7).mean()
+        v = vol[s].replace(0, np.nan)
+        f["volu_chg_1d"] = v.pct_change(1, fill_method=None).clip(-5, 5)
+        f["volu_vs_ma7"] = (v / v.rolling(7).mean() - 1).clip(-5, 5)
+        f["volu_vs_ma30"] = (v / v.rolling(30).mean() - 1).clip(-5, 5)
+        f["dow"] = f.index.dayofweek
+        for k in (1, 3, 7, 14, 30):
+            f[f"btc_ret_{k}d"] = b.pct_change(k, fill_method=None)
+        f["btc_vol_14d"] = br.rolling(14).std()
+        f["btc_px_vs_ma30"] = b / b.rolling(30).mean() - 1
+        f["rel_ret_7d"] = f["ret_7d"] - f["btc_ret_7d"]
+        f["rel_ret_30d"] = f["ret_30d"] - f["btc_ret_30d"]
+        f["beta_60"] = r1.rolling(60).cov(br) / br.rolling(60).var()
+        g = fng.reindex(f.index).ffill(limit=3) if len(fng) else pd.Series(np.nan, index=f.index)
+        f["fng"] = g
+        f["fng_chg_7d"] = g - g.shift(7)
+        f["fng_vs_ma30"] = g - g.rolling(30).mean()
+        fu = fu_all[fu_all["symbol"] == s].drop_duplicates("date").set_index("date")["funding_avg"]
+        fu = fu.reindex(f.index) * 24 * 365
+        f["fund_1d"] = fu
+        f["fund_7d"] = fu.rolling(7, min_periods=1).mean()
+        f["fund_z30"] = (fu - fu.rolling(30, min_periods=10).mean()) / fu.rolling(30, min_periods=10).std()
+        f["symbol"] = s
+        f["close"] = p
+        f["vol30"] = f["vol_30d"]
+        for h in PREDICTION_HORIZONS:
+            f[f"y{h}"] = p.shift(-h) / p - 1
+        frames.append(f.reset_index())
+    A = pd.concat(frames, ignore_index=True).replace([np.inf, -np.inf], np.nan)
+    A = A.dropna(subset=["ret_30d", "vol_30d", "close"])
+    A = A[A["vol30"] > 0]
+    for c in ("ret_7d", "ret_30d", "vol_30d", "volu_vs_ma30", "rel_ret_7d"):
+        A["xs_" + c] = A.groupby("date")[c].rank(pct=True)
+    return A
+
+
+def _pooled_feature_cols(A: pd.DataFrame) -> list:
+    meta = {"date", "symbol", "close", "vol30"} | {f"y{h}" for h in PREDICTION_HORIZONS}
+    return [c for c in A.columns if c not in meta]
+
+
+def _pooled_walk_forward(A: pd.DataFrame, h: int, cols: list) -> pd.DataFrame:
+    """Monthly walk-forward over the last POOLED_TEST_DAYS: every prediction is
+    made by a model that never saw that month (with an h-day gap)."""
+    ycol = f"y{h}"
+    last = A["date"].max()
+    fs = last - pd.Timedelta(days=POOLED_TEST_DAYS)
+    out = []
+    while fs < last:
+        fe = fs + pd.Timedelta(days=30)
+        tr = A[(A["date"] < fs - pd.Timedelta(days=h)) & A[ycol].notna()]
+        te = A[(A["date"] >= fs) & (A["date"] < fe) & A[ycol].notna()]
+        if len(tr) > 500 and not te.empty:
+            use = [c for c in cols if tr[c].notna().sum() >= 20]
+            m = _new_pooled_model().fit(tr[use].values, (tr[ycol] / (tr["vol30"] * np.sqrt(h))).values)
+            o = te[["date", "symbol"]].copy()
+            o["pred"] = m.predict(te[use].values) * (te["vol30"].values * np.sqrt(h))
+            o["act"] = te[ycol].values
+            out.append(o)
+        fs = fe
+    return pd.concat(out, ignore_index=True) if out else pd.DataFrame(columns=["date", "symbol", "pred", "act"])
+
+
+def _dir_stats(x: pd.DataFrame) -> dict:
+    x = x[x["act"] != 0]
+    if x.empty:
+        return {}
+    mae = float((x["pred"] - x["act"]).abs().mean())
+    base = float(x["act"].abs().mean())
+    return {
+        "n": int(len(x)), "mae": mae, "baseline_mae": base,
+        "rmse": float(np.sqrt(((x["pred"] - x["act"]) ** 2).mean())),
+        "skill": float(1 - mae / base) if base > 0 else 0.0,
+        "directional": float((np.sign(x["pred"]) == np.sign(x["act"])).mean() * 100),
+        "up_share": float((x["act"] > 0).mean() * 100),
+    }
+
+
+def train_pooled_all() -> list:
+    """Train the pooled price model for every horizon, record honest walk-forward
+    metrics per coin in ml_models, and write logs/pooled_report.txt."""
+    A = _pooled_frame()
+    if A.empty:
+        print("[POOLED] No daily candles yet — cannot train.")
+        return []
+    cols = _pooled_feature_cols(A)
+    results, lines = [], []
+    lines.append(f"Pooled price model v{POOLED_VERSION} — trained {datetime.utcnow():%Y-%m-%d %H:%M} UTC")
+    lines.append(f"Daily candles: {len(A)} rows, {A['symbol'].nunique()} coins, "
+                 f"{A['date'].min():%Y-%m-%d} to {A['date'].max():%Y-%m-%d}")
+    for h in PREDICTION_HORIZONS:
+        ycol = f"y{h}"
+        print(f"[POOLED] Training price model, {h}d horizon...")
+        wf = _pooled_walk_forward(A, h, cols)
+        overall = _dir_stats(wf)
+        per_sym = {s: _dir_stats(g) for s, g in wf.groupby("symbol")}
+        tr = A[A[ycol].notna()]
+        use = [c for c in cols if tr[c].notna().sum() >= 20]
+        model = _new_pooled_model().fit(tr[use].values, (tr[ycol] / (tr["vol30"] * np.sqrt(h))).values)
+        joblib.dump({
+            "version": POOLED_VERSION, "model": model, "feat_cols": use, "horizon": h,
+            "overall": overall, "per_symbol": per_sym, "rows": int(len(tr)),
+            "trained_at": datetime.utcnow().isoformat(),
+        }, _pooled_path(h))
+        try:
+            with db.get_connection() as conn:
+                cur = conn.cursor()
+                for sym in CRYPTO_ASSETS:
+                    st = per_sym.get(sym)
+                    if not st:
+                        continue
+                    cur.execute("""UPDATE ml_models SET is_active = 0
+                                   WHERE symbol = ? AND target = 'price_usd' AND horizon_days = ?""", sym, h)
+                    cur.execute("""
+                        INSERT INTO ml_models
+                            (symbol, target, horizon_days, model_file, mae, rmse, r2_score,
+                             training_rows, is_active, baseline_mae, skill_score,
+                             directional_acc, up_share, model_version)
+                        VALUES (?, 'price_usd', ?, ?, ?, ?, 0, ?, 1, ?, ?, ?, ?, ?)
+                    """, sym, h, _pooled_path(h), st["mae"], st["rmse"], int(len(tr)),
+                         st["baseline_mae"], st["skill"], st["directional"], st["up_share"], POOLED_VERSION)
+        except Exception as e:
+            print(f"[POOLED] Could not record metrics: {e}")
+        if overall:
+            msg = (f"{h}d: direction {overall['directional']:.1f}% | error {overall['mae']*100:.2f}% vs "
+                   f"no-change {overall['baseline_mae']*100:.2f}% (skill {overall['skill']*100:+.1f}%) | "
+                   f"test n={overall['n']} | trained on {len(tr)} rows")
+            print(f"[POOLED] {msg}")
+            lines.append(msg)
+            lines.append("   per coin dir%: " + ", ".join(
+                f"{s} {per_sym[s]['directional']:.0f}" for s in CRYPTO_ASSETS if per_sym.get(s)))
+        results.append({"horizon": h, **overall})
+    try:
+        os.makedirs("logs", exist_ok=True)
+        with open(os.path.join("logs", "pooled_report.txt"), "w") as fh:
+            fh.write("\n".join(lines) + "\n")
+    except Exception as e:
+        print(f"[POOLED] Could not write report: {e}")
+    _ctx_cache.pop("pooled_frame", None)
+    return results
+
+
+def pooled_is_current(horizon: int) -> bool:
+    try:
+        return joblib.load(_pooled_path(horizon)).get("version") == POOLED_VERSION
+    except Exception:
+        return False
+
+
+def pooled_age_days() -> float:
+    try:
+        t = datetime.fromisoformat(joblib.load(_pooled_path(PREDICTION_HORIZONS[0]))["trained_at"])
+        return (datetime.utcnow() - t).total_seconds() / 86400
+    except Exception:
+        return 1e9
+
+
+def retrain_if_stale(max_age_days: float = 7) -> bool:
+    """Weekly retrain of the pooled price model and the per-coin volume / market-cap models."""
+    if pooled_age_days() < max_age_days:
+        return False
+    print("[RETRAIN] Models are older than a week — retraining...")
+    train_pooled_all()
+    train_all(only_missing=False)
+    return True
+
+
+def _predict_price_pooled(symbol: str, horizon: int) -> dict:
+    """Forecast the daily CLOSE `horizon` days after the last completed UTC day."""
+    try:
+        meta = joblib.load(_pooled_path(horizon))
+    except Exception:
+        return None
+    if meta.get("version") != POOLED_VERSION:
+        return None
+    A = _cached("pooled_frame", _pooled_frame, ttl=900)
+    if A is None or A.empty:
+        return None
+    rows = A[A["symbol"] == symbol]
+    if rows.empty:
+        return None
+    row = rows.sort_values("date").iloc[-1]
+    last_day = pd.Timestamp(row["date"]).date()
+    if last_day < (datetime.utcnow().date() - timedelta(days=1)):
+        _ctx_cache.pop("pooled_frame", None)     # stale candles: try fresh next time
+        return None
+    x = row.reindex(meta["feat_cols"]).astype(float).values.reshape(1, -1)
+    pct = float(float(meta["model"].predict(x)[0]) * float(row["vol30"]) * np.sqrt(horizon))
+    base = float(row["close"])
+    pred_value = float(base * (1 + pct))
+    st = (meta.get("per_symbol") or {}).get(symbol) or meta.get("overall") or {}
+    margin = float(base * float(st.get("mae", 0.05)))
+    predicted_for = datetime.combine(last_day + timedelta(days=horizon), datetime.min.time())
+    result = {
+        "symbol": symbol, "target": "price_usd", "horizon": horizon,
+        "predicted_for": predicted_for, "predicted_value": pred_value, "predicted_pct": pct,
+        "lower_bound": max(pred_value - margin, 0), "upper_bound": pred_value + margin,
+    }
+    try:
+        db.save_prediction(symbol=symbol, target="price_usd", horizon=horizon,
+                           predicted_for=predicted_for, value=pred_value,
+                           lower=result["lower_bound"], upper=result["upper_bound"])
+    except Exception as e:
+        print(f"[POOLED] Could not save prediction: {e}")
+    return result
+
+
+def _daily_close_lookup() -> dict:
+    def load():
+        D = db.get_daily_candles()
+        if D is None or D.empty:
+            return {}
+        return {(s, pd.Timestamp(d).date()): float(c) for s, d, c in zip(D["symbol"], D["date"], D["close"])}
+    return _cached("daily_close_lookup", load, ttl=900)
+
+
 # Hidden live test: 1-day linear up/down model with all inputs (best backtest cell)
 SHADOW_HORIZON = 1
 SHADOW_KIND = "logit"
@@ -543,7 +826,7 @@ def train_all(only_missing: bool = False):
     only_missing=True skips models whose .pkl file already exists."""
     results = []
     for symbol in CRYPTO_ASSETS:
-        for target in TARGETS:
+        for target in PER_COIN_TARGETS:      # price_usd is handled by the pooled model
             for horizon in PREDICTION_HORIZONS:
                 if only_missing and model_is_current(symbol, target, horizon):
                     continue
@@ -575,6 +858,9 @@ def predict(symbol: str, target: str, horizon: int) -> dict:
     is applied to the latest daily value. The confidence band is the model's
     out-of-sample mean absolute % error.
     """
+    if target == "price_usd":
+        return _predict_price_pooled(symbol, horizon)
+
     meta = _load_model(symbol, target, horizon)
     if meta is None or meta.get("version") != MODEL_VERSION:
         return None
@@ -633,7 +919,7 @@ def get_model_quality() -> dict:
                 SELECT symbol, target, horizon_days, mae, baseline_mae, skill_score,
                        directional_acc, up_share
                 FROM ml_models
-                WHERE is_active = 1 AND model_version = ?
+                WHERE is_active = 1 AND model_version >= ?
             """, MODEL_VERSION).fetchall()
         for r in rows:
             out.setdefault(r[0], {}).setdefault(str(int(r[2])), {})[r[1]] = {
@@ -722,6 +1008,29 @@ def evaluate_past_predictions() -> int:
         }
         col = col_map.get(target)
         if not col:
+            continue
+
+        # Pooled price forecasts are made from the last completed daily close and
+        # target the daily close `horizon` days later — score them on the same
+        # clean daily candles. (Recognised by target_day - horizon < generation day.)
+        gen_day = pd.Timestamp(row["generated_at"]).date() if "generated_at" in row and pd.notna(row["generated_at"]) else None
+        if target == "price_usd" and gen_day is not None and (pred_date - timedelta(days=horizon)) < gen_day:
+            closes = _daily_close_lookup()
+            actual_val = closes.get((sym, pred_date))
+            base_val = closes.get((sym, pred_date - timedelta(days=horizon)))
+            if not actual_val or not base_val:
+                continue
+            try:
+                db.save_prediction_outcome(
+                    symbol=sym, target=target, horizon=horizon, predicted_for=pred_date,
+                    predicted_value=pred_val, actual_value=actual_val,
+                    abs_error=abs(pred_val - actual_val),
+                    pct_error=(pred_val - actual_val) / actual_val * 100,
+                    direction_correct=(pred_val > base_val) == (actual_val > base_val),
+                )
+                evaluated += 1
+            except Exception as e:
+                print(f"[EVAL] Could not save outcome {sym}/{target}/{horizon}d/{pred_date}: {e}")
             continue
 
         # Forecasts target the CLOSE of the predicted day (that is what the models

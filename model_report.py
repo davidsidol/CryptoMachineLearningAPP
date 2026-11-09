@@ -3,10 +3,10 @@ c = pyodbc.connect(config.DB_CONN_STR)
 rows = c.execute("""
   SELECT symbol, target, horizon_days, mae*100, baseline_mae*100, skill_score*100,
          directional_acc, up_share, training_rows
-  FROM ml_models WHERE is_active=1 AND model_version=3
+  FROM ml_models WHERE is_active=1 AND model_version>=3
   ORDER BY target, horizon_days, symbol""").fetchall()
 with open(r"logs\model_report.txt", "w") as f:
-    f.write(f"{len(rows)} active v3 models\n")
+    f.write(f"{len(rows)} active models\n")
     f.write("sym,target,h,mae%,baseline%,skill%,dir%,up%,rows\n")
     for r in rows:
         f.write(",".join([r[0], r[1], str(r[2])] + [f"{x:.2f}" for x in r[3:8]] + [str(r[8])]) + "\n")
