@@ -323,6 +323,124 @@ def ablation_report(target: str = "price_usd") -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+# ===========================================================================
+# Up/down (direction) classifiers — experimental, run alongside the
+# %-change regressors. Nothing here is used by the live app until enabled.
+# ===========================================================================
+
+from sklearn.ensemble import GradientBoostingClassifier
+from sklearn.linear_model import LogisticRegression
+from sklearn.preprocessing import StandardScaler
+from sklearn.pipeline import make_pipeline
+
+CLASSIFIER_VERSION = 1
+
+
+def _new_classifier(kind: str = "gb"):
+    if kind == "logit":
+        # Strongly regularised linear model: hard to overfit noise
+        return make_pipeline(StandardScaler(), LogisticRegression(C=0.05, max_iter=2000))
+    return GradientBoostingClassifier(
+        n_estimators=150, learning_rate=0.03, max_depth=2,
+        subsample=0.7, min_samples_leaf=30, random_state=42,
+    )
+
+
+def _class_data(df: pd.DataFrame, horizon: int, ctx: pd.DataFrame = None):
+    """X, y_pct (future % change of price), feature names. Rows with no move are dropped."""
+    X, y, feat_cols = _build_features(df, "price_usd", horizon, ctx)
+    if X is None:
+        return None, None, None
+    keep = y != 0
+    return X[keep], y[keep], feat_cols
+
+
+def _cv_eval_class(X, y_pct, horizon: int, feat_cols: list, kind: str = "gb") -> dict:
+    """
+    Walk-forward CV for an up/down classifier, compared with three simple rules
+    that need no model at all:
+      majority  – always predict whichever direction was more common in training
+      trend     – predict the same direction as the last `horizon` days' move
+      always_up – always predict up
+    Also reports probability quality (Brier score vs. the training up-rate) and
+    accuracy when the model is at least 55/45 confident.
+    """
+    y = (y_pct > 0).astype(int)
+    trend_col = f"ret_{horizon}d" if f"ret_{horizon}d" in feat_cols else "ret_1d"
+    ti = feat_cols.index(trend_col)
+    tscv = TimeSeriesSplit(n_splits=4, gap=horizon)
+    P, Y, MAJ, TR, CLIM = [], [], [], [], []
+    for tr, va in tscv.split(X):
+        if len(np.unique(y[tr])) < 2:
+            continue
+        m = _new_classifier(kind)
+        m.fit(X[tr], y[tr])
+        P.append(m.predict_proba(X[va])[:, 1])
+        Y.append(y[va])
+        up_rate = y[tr].mean()
+        MAJ.append(np.full(len(va), 1 if up_rate >= 0.5 else 0))
+        TR.append((X[va, ti] > 0).astype(int))
+        CLIM.append(np.full(len(va), up_rate))
+    p, yv = np.concatenate(P), np.concatenate(Y)
+    maj, trd, clim = np.concatenate(MAJ), np.concatenate(TR), np.concatenate(CLIM)
+    pred = (p >= 0.5).astype(int)
+    conf = np.abs(p - 0.5) >= 0.05
+    brier = float(np.mean((p - yv) ** 2))
+    brier_clim = float(np.mean((clim - yv) ** 2))
+    return {
+        "n": int(len(yv)),
+        "acc": float((pred == yv).mean() * 100),
+        "acc_majority": float((maj == yv).mean() * 100),
+        "acc_trend": float((trd == yv).mean() * 100),
+        "acc_always_up": float(yv.mean() * 100),
+        "best_simple": float(max((maj == yv).mean(), (trd == yv).mean(), yv.mean(), 1 - yv.mean()) * 100),
+        "brier": brier,
+        "brier_skill": float((1 - brier / brier_clim) * 100) if brier_clim > 0 else 0.0,
+        "conf_coverage": float(conf.mean() * 100),
+        "conf_acc": float((pred[conf] == yv[conf]).mean() * 100) if conf.any() else float("nan"),
+        "pred_up_share": float(pred.mean() * 100),
+    }
+
+
+def classifier_backtest(kinds=("gb", "logit"), input_sets=None) -> pd.DataFrame:
+    """Backtest up/down classifiers for every coin and horizon. Saves nothing."""
+    if input_sets is None:
+        input_sets = {"base": [], "all": ["btc", "fng", "funding"]}
+    rows = []
+    for symbol in CRYPTO_ASSETS:
+        df = db.get_price_history(symbol, days=730)
+        if df.empty:
+            continue
+        for set_name, sets in input_sets.items():
+            ctx = _context(symbol, 730, sets)
+            for h in PREDICTION_HORIZONS:
+                X, y, fc = _class_data(df, h, ctx)
+                if X is None:
+                    continue
+                for kind in kinds:
+                    ev = _cv_eval_class(X, y, h, fc, kind)
+                    rows.append({"symbol": symbol, "horizon": h, "inputs": set_name, "model": kind, **ev})
+    return pd.DataFrame(rows)
+
+
+def train_classifier(symbol: str, horizon: int, kind: str = "logit", feature_sets=None) -> dict:
+    """Fit and save an up/down classifier (models/<SYM>_dir_<h>d.pkl). Not used live yet."""
+    sets = _enabled_sets(feature_sets)
+    df = db.get_price_history(symbol, days=730)
+    ctx = _context(symbol, 730, sets)
+    X, y, fc = _class_data(df, horizon, ctx)
+    if X is None:
+        return {}
+    ev = _cv_eval_class(X, y, horizon, fc, kind)
+    m = _new_classifier(kind)
+    m.fit(X, (y > 0).astype(int))
+    path = os.path.join(MODEL_DIR, f"{symbol}_dir_{horizon}d.pkl")
+    joblib.dump({"version": CLASSIFIER_VERSION, "kind": kind, "model": m, "feat_cols": fc,
+                 "feature_sets": sets, "symbol": symbol, "horizon": horizon, "cv": ev,
+                 "trained_at": datetime.utcnow().isoformat()}, path)
+    return {"symbol": symbol, "horizon": horizon, "path": path, **ev}
+
+
 def model_is_current(symbol: str, target: str, horizon: int) -> bool:
     """True if a model file exists AND was built by the current MODEL_VERSION."""
     path = os.path.join(MODEL_DIR, f"{symbol}_{target}_{horizon}d.pkl")
