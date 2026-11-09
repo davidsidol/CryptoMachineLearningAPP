@@ -48,9 +48,19 @@ def _run_startup():
             startup_state["stage"] = "ML models up to date — skipping retrain…"
             time.sleep(1)
 
+        # 3b. Hidden up/down test models (trained once, never shown)
+        try:
+            ml.ensure_shadow_models()
+        except Exception as e:
+            print(f"[SHADOW] {e}")
+
         # 4. Predictions
         startup_state["stage"] = "Generating predictions…"
         ml.predict_all()
+        try:
+            ml.shadow_predict_all()
+        except Exception as e:
+            print(f"[SHADOW] {e}")
 
         # 5. Evaluate past predictions (score any that have now matured)
         startup_state["stage"] = "Evaluating past prediction accuracy…"
@@ -81,6 +91,7 @@ def _data_refresh_loop():
             print("[REFRESH] Refreshing market data…")
             dc.refresh_all()
             ml.evaluate_past_predictions()
+            ml.score_shadow()
         except Exception as e:
             print(f"[REFRESH ERROR] {e}")
 
@@ -94,6 +105,7 @@ def _prediction_refresh_loop():
         try:
             print("[PREDICT] Regenerating predictions…")
             ml.predict_all()
+            ml.shadow_predict_all()
         except Exception as e:
             print(f"[PREDICT ERROR] {e}")
 

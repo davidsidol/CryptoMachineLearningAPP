@@ -173,6 +173,11 @@ body { font-family: 'Inter', 'Segoe UI', system-ui, sans-serif; position: relati
   .hero { grid-template-columns: 1fr; gap: 1rem; }
   .hero-center, .hero-right { grid-column: 1; justify-self: center; }
 }
+.exp-tag { font-size:.56rem; font-weight:700; letter-spacing:.08em; text-transform:uppercase; padding:1px 6px; border-radius:999px;
+  background:rgba(250,204,21,.12); color:#facc15; border:1px solid rgba(250,204,21,.3); margin-left:6px; vertical-align:1px; }
+.exp-banner { display:flex; gap:.7rem; align-items:flex-start; padding:.75rem 1rem; margin-bottom:.9rem; border-radius:12px;
+  background:rgba(250,204,21,.07); border:1px solid rgba(250,204,21,.25); color:#e2e8f0; font-size:.8rem; }
+.exp-banner i { color:#facc15; font-size:1.1rem; line-height:1.2; }
 .bt-line { font-size: .64rem; color: #94a3b8; margin-top: .55rem; text-align: center; }
 .bt-good { color: #4ade80; } .bt-bad { color: #f87171; } .bt-mid { color: #facc15; }
 
@@ -342,7 +347,9 @@ body { font-family: 'Inter', 'Segoe UI', system-ui, sans-serif; position: relati
             <div class="metric-value">{% if p.get('market_cap') %}${{ '{:,.1f}'.format(p.market_cap / 1e9) }}B{% else %}–{% endif %}</div>
           </div></div>
         </div>
-        <div class="metric-label mb-2" style="color:#94a3b8"><i class="bi bi-lightning-charge-fill me-1" style="color:{{ info.color }}"></i>ML Price Forecast</div>
+        <div class="metric-label mb-2" style="color:#94a3b8" title="Backtests and the Nov 3–9 live test show no reliable edge over simple rules for price direction. Treat as context, not a signal.">
+          <i class="bi bi-lightning-charge-fill me-1" style="color:{{ info.color }}"></i>ML Price Forecast<span class="exp-tag">Experimental</span>
+        </div>
         <div class="row g-2 text-center">
           {% for h in horizons %}
           {% set pred = predictions.get(sym, {}).get(h|string, {}).get('price_usd', {}) %}
@@ -468,13 +475,19 @@ body { font-family: 'Inter', 'Segoe UI', system-ui, sans-serif; position: relati
   {% set daily5   = recs.get('daily_top5',   []) %}
   {% set monthly5 = recs.get('monthly_top5', []) %}
   {% if daily5 or monthly5 %}
+  <div class="exp-banner">
+    <i class="bi bi-exclamation-triangle-fill"></i>
+    <div><b>Experimental rankings — not trading signals.</b> These panels are built from the ML price forecasts, which have not beaten
+    simple rules in backtests or in live testing (about 50% right on direction). Volume forecasts and the futures &amp; options data above are
+    the parts with a measured edge or direct market information. Use these rankings for context only.</div>
+  </div>
   <div class="row g-3 mb-4">
     <!-- 1-Day Top 5 -->
     <div class="col-md-6">
       <div class="rec-section h-100">
         <div class="d-flex align-items-center justify-content-between mb-2">
           <div>
-            <div class="rec-section-title"><i class="bi bi-lightning-charge-fill me-1" style="color:#d29922"></i>Today's Top 5 — 24hr Buy Signal</div>
+            <div class="rec-section-title"><i class="bi bi-lightning-charge-fill me-1" style="color:#d29922"></i>Today's Top 5 — 24hr Model Ranking<span class="exp-tag">Experimental</span></div>
             <div style="font-size:.75rem;color:#8b949e;">Ranked by ML 24hr price target + 7-day momentum</div>
           </div>
         </div>
@@ -509,7 +522,7 @@ body { font-family: 'Inter', 'Segoe UI', system-ui, sans-serif; position: relati
       <div class="rec-section h-100">
         <div class="d-flex align-items-center justify-content-between mb-2">
           <div>
-            <div class="rec-section-title"><i class="bi bi-graph-up-arrow me-1" style="color:#79c0ff"></i>Long-Term Top 5 — 1-Month Hold</div>
+            <div class="rec-section-title"><i class="bi bi-graph-up-arrow me-1" style="color:#79c0ff"></i>Long-Term Top 5 — 1-Month Model Ranking<span class="exp-tag">Experimental</span></div>
             <div style="font-size:.75rem;color:#8b949e;">7-day ML trend extrapolated × 4.3 + 30-day momentum</div>
           </div>
         </div>
@@ -547,7 +560,7 @@ body { font-family: 'Inter', 'Segoe UI', system-ui, sans-serif; position: relati
       <div class="rec-section">
         <div class="d-flex align-items-center justify-content-between mb-3">
           <div>
-            <div class="rec-section-title"><i class="bi bi-calendar-week-fill me-1" style="color:#d29922"></i>Weekly Trade Ideas — Top 5 Longs &amp; Shorts</div>
+            <div class="rec-section-title"><i class="bi bi-calendar-week-fill me-1" style="color:#d29922"></i>Weekly Model Ideas — Top 5 Longs &amp; Shorts<span class="exp-tag">Experimental</span></div>
             <div style="font-size:.75rem;color:#8b949e;">Ranked by predicted 7-day price move magnitude · LONG = bullish target · SHORT = bearish target</div>
           </div>
         </div>
@@ -637,7 +650,7 @@ body { font-family: 'Inter', 'Segoe UI', system-ui, sans-serif; position: relati
     {% set horizon_labels = {1: '24hr', 3: '3-Day', 7: '7-Day', 30: '30-Day'} %}
     <div class="row g-3 mb-4">
       <div class="col-12">
-        <h6 class="text-muted mb-3"><i class="bi bi-lightning-charge me-2"></i>ML Price Forecasts</h6>
+        <h6 class="text-muted mb-3"><i class="bi bi-lightning-charge me-2"></i>ML Price Forecasts<span class="exp-tag">Experimental</span></h6>
       </div>
       {% for h in horizons %}
       {% set pred = predictions.get(sym, {}).get(h|string, {}).get('price_usd', {}) %}

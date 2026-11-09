@@ -441,6 +441,90 @@ def train_classifier(symbol: str, horizon: int, kind: str = "logit", feature_set
     return {"symbol": symbol, "horizon": horizon, "path": path, **ev}
 
 
+# Hidden live test: 1-day linear up/down model with all inputs (best backtest cell)
+SHADOW_HORIZON = 1
+SHADOW_KIND = "logit"
+SHADOW_SETS = ["btc", "fng", "funding"]
+
+
+def _shadow_path(symbol):
+    return os.path.join(MODEL_DIR, f"{symbol}_dir_{SHADOW_HORIZON}d.pkl")
+
+
+def ensure_shadow_models():
+    """Train the hidden up/down models once (kept fixed for the test period)."""
+    for symbol in CRYPTO_ASSETS:
+        try:
+            path = _shadow_path(symbol)
+            if os.path.exists(path):
+                meta = joblib.load(path)
+                if meta.get("version") == CLASSIFIER_VERSION and meta.get("kind") == SHADOW_KIND:
+                    continue
+            r = train_classifier(symbol, SHADOW_HORIZON, SHADOW_KIND, SHADOW_SETS)
+            if r:
+                print(f"[SHADOW] Trained {symbol} up/down model (backtest acc {r['acc']:.1f}%)")
+        except Exception as e:
+            print(f"[SHADOW] Train error {symbol}: {e}")
+
+
+def shadow_predict_all() -> int:
+    """Log an up/down probability per coin for tomorrow's close. Not displayed."""
+    n = 0
+    for symbol in CRYPTO_ASSETS:
+        try:
+            path = _shadow_path(symbol)
+            if not os.path.exists(path):
+                continue
+            meta = joblib.load(path)
+            daily = _to_daily(db.get_price_history(symbol, days=120))
+            if daily.empty or len(daily) < 35:
+                continue
+            ctx = _context(symbol, 120, meta.get("feature_sets", []))
+            row = _features(daily, ctx).reindex(columns=meta["feat_cols"]).iloc[-1]
+            prob = float(meta["model"].predict_proba(row.fillna(0).values.reshape(1, -1))[0, 1])
+            base = float(daily["price_usd"].dropna().iloc[-1])
+            target = (datetime.utcnow() + timedelta(days=SHADOW_HORIZON)).date()
+            db.insert_shadow(symbol, SHADOW_HORIZON, target, base, prob)
+            n += 1
+        except Exception as e:
+            print(f"[SHADOW] Predict error {symbol}: {e}")
+    return n
+
+
+def score_shadow() -> int:
+    """Score logged up/down calls once their target day has closed."""
+    try:
+        pending = db.get_unscored_shadow()
+    except Exception as e:
+        print(f"[SHADOW] Read error: {e}")
+        return 0
+    if pending.empty:
+        return 0
+    n, cache = 0, {}
+    for _, r in pending.iterrows():
+        sym = r["symbol"]
+        if sym not in cache:
+            h = db.get_price_history(sym, days=60)
+            h["date"] = pd.to_datetime(h["timestamp"]).dt.date
+            cache[sym] = h
+        day = cache[sym][cache[sym]["date"] == pd.Timestamp(r["target_date"]).date()].sort_values("timestamp")
+        if day.empty:
+            continue
+        actual = float(day["price_usd"].iloc[-1])
+        base = float(r["base_price"])
+        if actual == base:
+            continue
+        correct = (float(r["prob_up"]) >= 0.5) == (actual > base)
+        try:
+            db.score_shadow(int(r["id"]), actual, bool(correct))
+            n += 1
+        except Exception as e:
+            print(f"[SHADOW] Score error: {e}")
+    if n:
+        print(f"[SHADOW] Scored {n} up/down calls.")
+    return n
+
+
 def model_is_current(symbol: str, target: str, horizon: int) -> bool:
     """True if a model file exists AND was built by the current MODEL_VERSION."""
     path = os.path.join(MODEL_DIR, f"{symbol}_{target}_{horizon}d.pkl")

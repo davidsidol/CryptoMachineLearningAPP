@@ -215,6 +215,23 @@ def setup_database():
             )
         """)
 
+        # Hidden live test of the 1-day up/down classifier (not shown on the dashboard)
+        cursor.execute("""
+            IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='direction_shadow' AND xtype='U')
+            CREATE TABLE direction_shadow (
+                id            BIGINT IDENTITY(1,1) PRIMARY KEY,
+                symbol        NVARCHAR(10) NOT NULL,
+                horizon_days  INT          NOT NULL,
+                generated_at  DATETIME2    NOT NULL DEFAULT GETUTCDATE(),
+                target_date   DATE         NOT NULL,
+                base_price    FLOAT        NOT NULL,
+                prob_up       FLOAT        NOT NULL,
+                actual_close  FLOAT        NULL,
+                correct       BIT          NULL,
+                scored_at     DATETIME2    NULL
+            )
+        """)
+
         print("[DB] All tables created/verified.")
 
 
@@ -574,3 +591,32 @@ def delete_outcomes_since(day) -> int:
         cur = conn.cursor()
         cur.execute("DELETE FROM prediction_outcomes WHERE predicted_for >= ?", day)
         return cur.rowcount
+
+
+# ---------------------------------------------------------------------------
+# Hidden up/down classifier test
+# ---------------------------------------------------------------------------
+
+def insert_shadow(symbol, horizon, target_date, base_price, prob_up):
+    with get_connection() as conn:
+        conn.cursor().execute("""
+            INSERT INTO direction_shadow (symbol, horizon_days, target_date, base_price, prob_up)
+            VALUES (?, ?, ?, ?, ?)
+        """, symbol, horizon, target_date, base_price, prob_up)
+
+
+def get_unscored_shadow() -> pd.DataFrame:
+    with get_connection() as conn:
+        return pd.read_sql("""
+            SELECT id, symbol, horizon_days, generated_at, target_date, base_price, prob_up
+            FROM direction_shadow
+            WHERE correct IS NULL AND target_date < CAST(GETUTCDATE() AS DATE)
+        """, conn)
+
+
+def score_shadow(row_id, actual_close, correct):
+    with get_connection() as conn:
+        conn.cursor().execute("""
+            UPDATE direction_shadow SET actual_close = ?, correct = ?, scored_at = GETUTCDATE()
+            WHERE id = ?
+        """, actual_close, correct, row_id)
